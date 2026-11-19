@@ -85,9 +85,24 @@ jobs:
           curl -sk "https://127.0.0.1:8787/test?format=json"
           echo
 
-      - name: 输出镜像体积
+      - name: 诊断镜像体积构成
         run: |
-          docker images vnts2-ws:smoke --format '镜像体积: {{.Size}}'
+          echo "===== 基础镜像体积 ====="
+          docker pull -q node:20-bookworm-slim >/dev/null
+          docker pull -q node:20-bookworm >/dev/null
+          docker images --format '{{.Repository}}:{{.Tag}}\t{{.Size}}' | grep -E '^node:20-bookworm'
+
+          echo "===== 最终镜像体积 ====="
+          docker images vnts2-ws:smoke --format '{{.Size}}'
+
+          echo "===== 镜像内占用分布 ====="
+          docker run --rm --entrypoint sh vnts2-ws:smoke -c '
+            echo "--- 顶层目录 ---"
+            du -sh /usr/local/lib/node_modules 2>/dev/null
+            du -sh /app 2>/dev/null
+            echo "--- /app/node_modules 前 12 大 ---"
+            du -sh /app/node_modules/* 2>/dev/null | sort -rh | head -12
+          '
 
       - name: 清理
         if: always()
