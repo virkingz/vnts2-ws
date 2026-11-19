@@ -1,0 +1,40 @@
+name: 测量旧配置镜像体积（临时）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  measure:
+    name: 构建并测量旧版 Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 还原旧版配置（完整 bookworm + 单阶段 + npm install + 无 dockerignore）
+        run: |
+          rm -f .dockerignore
+          cat > Dockerfile.old <<'EOF'
+          FROM node:20-bookworm
+
+          WORKDIR /app
+
+          COPY package*.json ./
+          RUN npm install
+
+          COPY . .
+
+          RUN node scripts/gen-version.js
+
+          EXPOSE 8787
+
+          CMD ["node", "scripts/docker-start.mjs"]
+          EOF
+
+      - name: 构建旧版镜像
+        run: docker build -f Dockerfile.old -t vnts2-ws:old .
+
+      - name: 输出体积对比
+        run: |
+          echo "===== 旧配置镜像体积 ====="
+          docker images vnts2-ws:old --format '{{.Size}}'
