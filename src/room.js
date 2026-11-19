@@ -188,9 +188,13 @@ export class Vnts2Room {
     const bytes = await toBytes(raw);
     if (bytes.length > MAX_MESSAGE_BYTES) throw new Error(`消息超过大小限制：${bytes.length} > ${MAX_MESSAGE_BYTES}`);
     if (!session.registered) {
-      // 记录入站首包概况，便于排查「读取 varint 时遇到意外 EOF」这类空包/畸形包问题。
-      // 若长度恒为 0，说明对端在 WS 升级后发了空帧，或连接被中途截断。
-      this.logDebug(`收到注册首包 会话=${sessionId} 类型=${typeof raw} 长度=${bytes.length}`);
+      // 记录入站首包概况，便于排查注册失败。
+      // 首字节是关键判据：
+      //   0x0a      -> 标准 protobuf 注册包（field=1, wire=2）正常格式
+      //   0x80|type -> 标准 vnts2 数据包（16 字节包头），不应作为注册首包
+      // 其余值多为客户端版本或传输封装不匹配。
+      const head = bytes.length ? `0x${bytes[0].toString(16).padStart(2, "0")}` : "无";
+      this.logDebug(`收到注册首包 会话=${sessionId} 类型=${typeof raw} 长度=${bytes.length} 首字节=${head}`);
       if (bytes.length === 0) throw new Error("注册首包为空，请确认客户端协议版本为 VNT2");
       await this.handleRegister(session, bytes);
       return;
