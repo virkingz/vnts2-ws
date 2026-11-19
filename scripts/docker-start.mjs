@@ -46,6 +46,17 @@ for (const key of configurableVars) {
   changed.push(key);
 }
 
+// 若构建期已打好 bundle（Dockerfile 中 wrangler deploy --dry-run 产出），
+// 则把入口指向它，运行时配合 --no-bundle 跳过每次启动的 esbuild 打包与
+// [build] 钩子，缩短冷启动。源码开发模式（无 dist）仍走原路径。
+const prebuiltBundle = "dist/worker.js";
+const usePrebuilt = existsSync(prebuiltBundle);
+if (usePrebuilt && /^main\s*=\s*".*"$/m.test(toml)) {
+  toml = toml.replace(/^main\s*=\s*".*"$/m, `main = "${prebuiltBundle}"`);
+  if (!changed.includes("main")) changed.push("main");
+  console.log(`[vnts2-cf] 检测到预编译产物，入口改为 ${prebuiltBundle}（跳过运行时打包）`);
+}
+
 if (changed.length) {
   writeFileSync("wrangler.toml", toml);
   console.log(`[vnts2-cf] Docker 启动参数已写入 wrangler.toml：${changed.join(", ")}`);
@@ -96,6 +107,8 @@ if (process.env.LOCAL_PROTOCOL === "http-wss-proxy") {
   console.log(`[vnts2-cf] Docker 本地测试模式：Worker HTTP=${internalPort}，WSS 代理=${publicPort}`);
   if (persistTo) console.log(`[vnts2-cf] Durable Object 状态目录：${persistTo}`);
   const workerArgs = ["dev", "--ip", "0.0.0.0", "--port", internalPort, "--local-protocol", "http"];
+  // 已预编译时跳过打包，直接用 dist/worker.js 启动。
+  if (usePrebuilt) workerArgs.push("--no-bundle");
   // 指定持久化目录，使其落在挂载卷内，容器重建后仍可读回。
   // 未设置 PERSIST_TO 时沿用 wrangler 默认的 .wrangler/state（容器内，重建即丢失）。
   if (persistTo) workerArgs.push("--persist-to", persistTo);

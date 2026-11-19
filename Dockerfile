@@ -43,6 +43,14 @@ ARG SERVER_COMMIT=""
 ENV SERVER_COMMIT=${SERVER_COMMIT}
 RUN node scripts/gen-version.js
 
+# 构建期预编译 Worker bundle（dist/worker.js）。
+# 运行时用 `wrangler dev --no-bundle` 直接加载该产物，跳过每次启动的
+# esbuild 打包与 [build] 钩子，缩短容器冷启动时间。
+# 必须放在 gen-version 之后：src/version.js 是在上一步生成的，
+# 若提前打包会把旧版本号固化进产物。
+RUN ./node_modules/.bin/wrangler deploy --dry-run --outdir dist \
+    && test -f dist/worker.js
+
 EXPOSE 8787
 
 CMD ["node", "scripts/docker-start.mjs"]
