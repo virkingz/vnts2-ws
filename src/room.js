@@ -1170,10 +1170,11 @@ export class Vnts2Room {
 }
 
 // 解析 PEER_SERVERS：逗号分隔，自动去除两端空格与末尾斜杠，空项忽略。
-// 互联接口是容器内明文 HTTP（8786），不带 TLS 证书。若误填 https://，
-// workerd 会在 TLS 握手阶段报「TLS peer's certificate is not trusted」，
-// 且以 internal error 形式反复刷日志、无法被普通 catch 完全收敛。
-// 因此这里直接过滤掉非 http:// 的项，并返回明确错误供启动时上报。
+// 同时支持 http:// 与 https://：
+//   - http://  -> 直连对端的明文互联端口（如 18786），无需证书
+//   - https:// -> 经反向代理/隧道映射到互联端口，需要 workerd 信任该证书
+// Cloudflare 官方说明：workerd 默认不信任自签证书，
+// 需设置 NODE_EXTRA_CA_CERTS 指向 CA 证书来建立信任。
 export function parsePeerServers(raw) {
   const peers = [];
   const errors = [];
@@ -1181,19 +1182,10 @@ export function parsePeerServers(raw) {
     .split(",")
     .map((v) => v.trim().replace(/\/+$/, ""))
     .filter(Boolean)) {
-    if (/^https:\/\//i.test(peer)) {
+    if (!/^https?:\/\//i.test(peer)) {
       errors.push(
-        `PEER_SERVERS 中的 ${peer} 使用了 https://，该项已暂不启用。` +
-          `互联接口是明文 HTTP（容器内 8786），互联端口不带 TLS 证书，` +
-          `https 会因自签证书校验失败而报 "TLS peer's certificate is not trusted"。` +
-          `请改为 http://<对端IP>:<对端互联端口>（默认 18786）。`
-      );
-      continue;
-    }
-    if (!/^http:\/\//i.test(peer)) {
-      errors.push(
-        `PEER_SERVERS 中的 ${peer} 缺少 http:// 前缀，该项已暂不启用。` +
-          `应写成 http://<对端IP>:<对端互联端口>。`
+        `PEER_SERVERS 中的 ${peer} 缺少 http:// 或 https:// 前缀，该项已暂不启用。` +
+          `应写成 http://<对端IP>:<对端互联端口> 或 https://<对端域名>。`
       );
       continue;
     }

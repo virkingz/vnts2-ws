@@ -416,10 +416,38 @@ PEER_SERVERS: "http://203.0.113.20:18786,http://203.0.113.30:18786,http://node-c
 注意事项：
 
 - 用**英文逗号**，不要用中文逗号、分号或换行
-- 每项必须带 `http://`（互联是明文 HTTP，不是 https）
+- 每项必须带 `http://` 或 `https://` 前缀，缺少前缀会被忽略并在启动日志报配置错误
 - 端口填**对端的**互联端口（默认映射为 18786），不是自己的
 - **不要填本节点自身地址**，否则形成互联环路
 - 所有互联节点的 `SERVER_TOKEN` 必须**完全相同**
+
+#### 互联走 https:// 的场景
+
+若用反向代理或隧道把 `https://peer.example.com` 映射到对端的 `http://<IP>:18786`，
+`PEER_SERVERS` 就可以填 `https://peer.example.com`（协议层完全支持）。
+
+但 **workerd 默认不信任自签证书**，对端证书若是自签的会报：
+
+```
+failed: TLS peer's certificate is not trusted,
+reason = self signed certificate in certificate chain
+```
+
+解决办法（Cloudflare 官方做法）——把签发该证书的 CA 交给 workerd：
+
+```yaml
+services:
+  vnts2:
+    environment:
+      NODE_EXTRA_CA_CERTS: /certs/ca.crt   # 指向容器内 CA 证书
+    volumes:
+      - ./certs/ca.crt:/certs/ca.crt:ro    # 把 CA 挂进容器
+```
+
+- 对端用**公共 CA** 证书（Let's Encrypt、Cloudflare 等）时，**无需任何配置**，直接可用
+- 互联走 `http://` 时也不要设置此项
+- 该变量为空或指向不存在的文件时，启动脚本会打印明确提示
+
 
 拓扑建议：
 

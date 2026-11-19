@@ -1,5 +1,20 @@
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+// workerd 默认不信任自签证书。当 PEER_SERVERS 使用 https:// 且对端为自签证书时，
+// 需通过 NODE_EXTRA_CA_CERTS 指向 CA 证书，wrangler 会把它传给 workerd。
+// 这里做一层校验：文件不存在就明确报错，为空则移除，避免 Node 拿空路径去加载。
+const extraCa = String(process.env.NODE_EXTRA_CA_CERTS || "").trim();
+if (!extraCa) {
+  delete process.env.NODE_EXTRA_CA_CERTS;
+} else if (!existsSync(extraCa)) {
+  console.error(`[vnts2-cf] NODE_EXTRA_CA_CERTS 指向的文件不存在：${extraCa}`);
+  console.error("[vnts2-cf] 互联使用 https:// 自签证书时需要该 CA 文件；若互联走 http:// 可忽略此项。");
+  delete process.env.NODE_EXTRA_CA_CERTS;
+} else {
+  process.env.NODE_EXTRA_CA_CERTS = extraCa;
+  console.log(`[vnts2-cf] 已加载额外 CA 证书：${extraCa}`);
+}
 
 const configurableVars = [
   "NETWORKS",

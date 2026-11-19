@@ -43,8 +43,13 @@ services:
       TEST_PASSWORD: "${TEST_PASSWORD:-}"
 
       PERSIST_TO: /data
+
+      # 互联走 https:// 自签证书时必需：指向容器内的 CA 证书；走 http:// 时留空。
+      NODE_EXTRA_CA_CERTS: "${NODE_EXTRA_CA_CERTS:-}"
     volumes:
       - vnts2-data:/data
+      # 可选：自签 CA 证书，启用 https 互联时取消注释
+      # - ./certs/ca.crt:/certs/ca.crt:ro
     ports:
       # 客户端接入端口。
       # 两台机器各自独立，端口不会冲突，因此与 node-a 保持一致即可。

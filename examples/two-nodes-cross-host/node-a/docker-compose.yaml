@@ -48,9 +48,18 @@ services:
 
       # DO 状态持久化目录，指向下方挂载的卷
       PERSIST_TO: /data
+
+      # ===== 互联走 https:// 自签证书时必需 =====
+      # workerd 默认不信任自签证书。若 PEER_SERVERS 用 https:// 且对端是自签证书，
+      # 需把 CA 证书挂进容器并在此指向它（例：/certs/ca.crt）。
+      # 互联走 http:// 时留空即可。
+      NODE_EXTRA_CA_CERTS: "${NODE_EXTRA_CA_CERTS:-}"
     volumes:
       # 设备档案 / IP 分配 / 流量统计。容器重建后数据仍在。
       - vnts2-data:/data
+      # 可选：自签 CA 证书。启用 https 互联时取消注释，
+      # 并在 .env 中设置 NODE_EXTRA_CA_CERTS=/certs/ca.crt
+      # - ./certs/ca.crt:/certs/ca.crt:ro
     ports:
       # 客户端接入端口
       - "${WSS_PORT:-8787}:8787"
