@@ -1,0 +1,99 @@
+# vnts2-ws Docker Compose 示例
+#
+# 演示两个服务端互联（互通在线客户端、跨节点转发数据），
+# 并通过 NETWORKS 白名单限制客户端可使用的网络编号。
+#
+# 客户端接入地址：
+#   节点 A  wss://<主机IP>:8787
+#   节点 B  wss://<主机IP>:8788
+#
+# 连接示例（网络编号必须在白名单内，否则服务端拒绝注册）：
+#   sudo ./vnt2_cli -s wss://<主机IP>:8787 -n office --cert-mode skip
+#   sudo ./vnt2_cli -s wss://<主机IP>:8788 -n lab    --cert-mode skip
+#
+# 互联原理：Worker 由 wrangler dev 以纯 HTTP 监听容器内 8786 端口，
+# 节点之间通过 PEER_SERVERS 访问对方的 8786 完成 ClientInfo / ForwardData 同步。
+# 因此互联走的是内部明文 HTTP，不经过 8787 的 WSS 端口，也不需要 TLS 证书。
+
+# 两个节点共享的环境变量。SERVER_TOKEN 必须非空且完全一致，否则互联鉴权失败。
+x-common-env: &common-env
+  # 本地 Docker 模式：Worker 监听 8786(HTTP)，8787 暴露 WSS 供客户端接入
+  LOCAL_PROTOCOL: http-wss-proxy
+  INTERNAL_PORT: "8786"
+  PUBLIC_PORT: "8787"
+
+  # ===== 网络编号白名单（核心需求）=====
+  # 仅允许此处列出的编号注册；留空则允许任意编号。
+  # 只限制客户端 -n/--network-code，不影响服务端彼此互联。
+  NETWORKS: "${NETWORKS:-office,lab}"
+
+  # ===== 服务端互联 =====
+  # 所有参与互联的节点必须配置相同的非空值；留空会禁用 /peer 互联接口。
+  SERVER_TOKEN: "${SERVER_TOKEN:-vnts2-shared-token-change-me}"
+
+  # 离线租约秒数：超过该时长仍未上线的设备会被清理（默认 86400 = 24 小时）
+  LEASE_DURATION: "${LEASE_DURATION:-86400}"
+
+  # 维护周期（秒）：清理租约、刷新互联客户端列表、向本地客户端发 Ping
+  MAINTENANCE_INTERVAL: "${MAINTENANCE_INTERVAL:-15}"
+
+  # 是否禁止服务端中转：1/true/yes/on 为禁止，其余值启用（默认启用）
+  DISABLE_RELAY: "${DISABLE_RELAY:-0}"
+
+  # 日志级别：debug / info / off
+  LOG_LEVEL: "${LOG_LEVEL:-off}"
+
+  # 日志页密码，留空则 /log 不开放且不记录日志
+  LOG_PASSWORD: "${LOG_PASSWORD:-}"
+
+  # /test 状态页密码，留空则公开可访问
+  TEST_PASSWORD: "${TEST_PASSWORD:-}"
+
+services:
+  # ---------- 节点 A ----------
+  vnts2-a:
+    image: ghcr.io/virkingz/vnts2-ws:latest
+    container_name: vnts2-a
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      # 指向【另一个节点】的互联地址。使用容器名 vnts2-b，Compose 默认网络自带 DNS。
+      # 严禁填写本节点自身地址，否则形成互联环路。
+      PEER_SERVERS: "http://vnts2-b:8786"
+    ports:
+      # 宿主机端口 -> 本节点 WSS 接入端口
+      - "${PORT_A:-8787}:8787"
+    healthcheck:
+      # 探测容器内 Worker 的明文 HTTP 端口，验证服务已就绪。
+      # 只判断端口可达（不校验状态码），因此配置了 TEST_PASSWORD 也不影响。
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # wrangler dev 首次启动需要编译 Worker，给足冷启动时间
+      start_period: 40s
+    networks: [vnts2]
+
+  # ---------- 节点 B ----------
+  vnts2-b:
+    image: ghcr.io/virkingz/vnts2-ws:latest
+    container_name: vnts2-b
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      # 指向节点 A，与本节点自身地址不同
+      PEER_SERVERS: "http://vnts2-a:8786"
+    ports:
+      # 换一个宿主机端口，避免与节点 A 冲突
+      - "${PORT_B:-8788}:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks: [vnts2]
+
+networks:
+  vnts2:
+    driver: bridge

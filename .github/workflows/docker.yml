@@ -100,10 +100,126 @@ jobs:
         if: always()
         run: docker rm -f smoke || true
 
+  compose:
+    name: Compose 互联与白名单验证
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 构建镜像到本地
+        run: |
+          docker build --build-arg SERVER_COMMIT=${{ github.sha }} -t ghcr.io/virkingz/vnts2-ws:latest .
+
+      - name: 构建测试用客户端镜像
+        run: docker build -t vnts2-ws-client -f test/client.Dockerfile test
+
+      - name: 启动 compose（两节点互联 + 白名单 office,lab）
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yaml up -d
+
+          echo "等待两个节点就绪..."
+          for port in 8787 8788; do
+            ok=0
+            for i in $(seq 1 60); do
+              if curl -sk --max-time 3 "https://127.0.0.1:$port/test?format=json" | grep -q '"WebSocket服务":"正常"'; then
+                ok=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::error::端口 $port 未在超时时间内就绪"
+              docker compose -f docker-compose.yaml logs --no-color || true
+              exit 1
+            fi
+          done
+          echo "两个节点均已就绪"
+
+      - name: 验证白名单拒绝未授权网络编号
+        run: |
+          set -euo pipefail
+          # 用一个不在白名单内的编号注册，客户端应无法成功建立连接
+          set +e
+          out=$(docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+            --add-host host.docker.internal:host-gateway \
+            vnts2-ws-client \
+            timeout 20 vnt2_cli -s wss://host.docker.internal:8787 -n notallowed \
+              --cert-mode skip --device-id wl-test 2>&1)
+          code=$?
+          set -e
+          echo "----- 客户端输出 -----"
+          echo "$out"
+          echo "退出码: $code"
+
+          # 期望：注册被拒（服务端返回 400 错误并关闭会话），客户端不会进入已连接状态
+          if echo "$out" | grep -qiE "not allowed|不允许|被服务端允许"; then
+            echo "白名单生效：未授权网络编号被拒绝"
+          else
+            echo "::error::白名单未生效，未授权编号未被拒绝"
+            exit 1
+          fi
+
+      - name: 验证白名单内编号可正常注册
+        run: |
+          set -euo pipefail
+          docker run -d --name wl-ok --cap-add NET_ADMIN --device /dev/net/tun \
+            --add-host host.docker.internal:host-gateway \
+            vnts2-ws-client \
+            vnt2_cli -s wss://host.docker.internal:8787 -n office --ip 10.46.0.2 \
+              --cert-mode skip --device-id wl-ok --ctrl-port 11233
+
+          sleep 15
+          echo "----- 客户端状态 -----"
+          docker exec wl-ok vnt2_ctrl -p 11233 clients || true
+
+          echo "----- 节点 A /room 客户端列表 -----"
+          curl -sk "https://127.0.0.1:8787/room?format=json&network=office&gateway=10.46.0.1" | head -c 800
+          echo
+
+      - name: 验证跨节点互联
+        run: |
+          set -euo pipefail
+          # 在节点 B 上也注册一个客户端，两个客户端应能互相看到并通过互联通信
+          docker run -d --name wl-ok-b --cap-add NET_ADMIN --device /dev/net/tun \
+            --add-host host.docker.internal:host-gateway \
+            vnts2-ws-client \
+            vnt2_cli -s wss://host.docker.internal:8788 -n office --ip 10.46.0.3 \
+              --cert-mode skip --device-id wl-ok-b --ctrl-port 11233
+
+          echo "等待互联客户端列表同步..."
+          sleep 20
+
+          echo "----- 节点 A 视角（应能看到节点 B 的 10.46.0.3）-----"
+          docker exec wl-ok vnt2_ctrl -p 11233 clients || true
+
+          echo "----- 跨节点 ping 10.46.0.3 -----"
+          docker exec wl-ok ping -c 4 -W 3 10.46.0.3
+
+          echo "----- 节点 A /test 互联状态 -----"
+          curl -sk "https://127.0.0.1:8787/test?format=json"
+          echo
+
+      - name: 失败时输出日志
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yaml logs --no-color || true
+          docker logs wl-ok 2>&1 || true
+          docker logs wl-ok-b 2>&1 || true
+
+      - name: 清理
+        if: always()
+        run: |
+          docker rm -f wl-ok wl-ok-b || true
+          docker compose -f docker-compose.yaml down -v || true
+
   build:
     name: 构建并推送镜像
     runs-on: ubuntu-latest
-    needs: [test, smoke]
+
+    needs: [test, smoke, compose]
     # 仅在推送分支/标签时推送镜像；PR 只做构建与启动验证，不推送到仓库。
     if: github.event_name != 'pull_request'
     permissions:
