@@ -262,17 +262,27 @@ jobs:
           echo "$after" | head -c 600
           echo
 
-          # 客户端已停，此时设备若仍在列表中，只能来自持久化档案
+          # 客户端已停，此时设备若仍在列表中，只能来自持久化档案。
+          # 注意：只校验注册到【本节点】的 10.46.0.2。
+          # 10.46.0.3 注册在节点 B，属于互联客户端，其缓存会随节点 B 离线而失效，
+          # 不应出现在节点 A 的本地设备列表里。
           echo "----- 检查历史设备是否保留 -----"
-          for ip in 10.46.0.2 10.46.0.3; do
-            if echo "$after" | grep -q "$ip"; then
-              echo "保留: $ip"
-            else
-              echo "::error::容器重建后丢失设备 $ip"
-              exit 1
-            fi
-          done
-          echo "持久化验证通过：客户端已停，容器重建后 DO 仍持有原设备档案"
+          if echo "$after" | grep -q "10.46.0.2"; then
+            echo "保留: 10.46.0.2（本地设备档案）"
+          else
+            echo "::error::容器重建后丢失本地设备 10.46.0.2"
+            exit 1
+          fi
+
+          # 进一步确认真的是完整档案被读回，而不只是 IP 恰好出现。
+          # 校验设备 ID，它只在注册时写入并随档案持久化。
+          if echo "$after" | grep -q '"设备ID":"wl-ok"'; then
+            echo "设备 ID 已随档案恢复"
+          else
+            echo "::error::设备档案不完整，设备 ID 未恢复"
+            exit 1
+          fi
+          echo "持久化验证通过：客户端已停，容器重建后 DO 仍持有完整设备档案"
 
       - name: 失败时输出日志
         if: failure()
