@@ -28,6 +28,23 @@ jobs:
       - name: 生成版本号
         run: node scripts/gen-version.js
 
+      - name: 检查版本号生成是否幂等（防构建死循环）
+        run: |
+          set -euo pipefail
+          # wrangler.toml 配置了 [build] command = "node scripts/gen-version.js"，
+          # 而 src/version.js 在 wrangler 监视范围内。若该脚本每次都重写文件，
+          # 会形成「构建 -> 写文件 -> 触发重建」的无限循环。
+          # 这里断言：连续两次运行后文件未被修改。
+          before=$(stat -c '%Y' src/version.js)
+          sleep 1
+          node scripts/gen-version.js
+          after=$(stat -c '%Y' src/version.js)
+          if [ "$before" != "$after" ]; then
+            echo "::error::gen-version.js 会重复写入 src/version.js，将导致 wrangler 构建死循环"
+            exit 1
+          fi
+          echo "gen-version.js 幂等性检查通过（重复运行不写文件）"
+
       - name: 运行测试
         run: npm test
 
