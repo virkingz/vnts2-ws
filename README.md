@@ -32,7 +32,11 @@
 
 **构建与 CI**
 - `Dockerfile` 内自动生成 `src/version.js`（该文件不入库，原镜像会因 import 失败而无法启动）。
-- 新增 GitHub Actions：运行单测 + 构建镜像并推送到 GHCR，镜像内版本号可通过 `SERVER_COMMIT` 追溯到具体提交。
+- 镜像改为多阶段构建 + `node:20-bookworm-slim`，并跳过可选依赖 `sharp`，
+  体积由约 1.96GB 降至约 480MB（约 75%）。
+- 补 `package-lock.json`（原仓库无 lockfile），构建可复现、版本不再漂移。
+- 新增 GitHub Actions：运行单测 + 真实拉起容器做启动冒烟测试 + 构建镜像推送到 GHCR，
+  镜像内版本号可通过 `SERVER_COMMIT` 追溯到具体提交。
 
 ## 目录
 
@@ -305,7 +309,7 @@ sudo ./vnt2_cli -s wss://你的域名:443 -n 你的网络编号t --ip 10.88.0.3 
 
 ## 使用预构建 Docker 镜像
 
-每次推送到 `master` 或打 `v*` 标签，CI 会自动构建镜像并推送到 GitHub Container Registry：
+每次推送到 `main` 或打 `v*` 标签，CI 会自动构建镜像并推送到 GitHub Container Registry：
 
 ```bash
 # 拉取最新镜像
@@ -327,6 +331,17 @@ sudo ./vnt2_cli -s wss://127.0.0.1:8787 -n 你的网络编号 --cert-mode skip
 
 > 镜像内已自动生成 `src/version.js`，版本号格式为 `<日期>_<短提交哈希>`，
 > 可在 `/test` 页面的「服务端版本」中直接核对当前镜像对应的提交。
+
+### 镜像体积
+
+镜像采用多阶段构建 + `node:20-bookworm-slim` 基础镜像，体积约 **480MB**
+（上游单阶段 + 完整 `bookworm` 的写法实测约 **1.96GB**，压缩约 75%）。
+
+体积构成中最大的一块是 `wrangler` 的 `workerd` 运行时（约 102MB）——
+本地 Docker 模式靠它模拟 Worker 与 Durable Object，因此不可裁剪。
+
+CI 中的「容器启动冒烟测试」会真实拉起容器并轮询 `/test`，
+验证通过后才允许推送镜像，避免发布起不来的镜像。
 
 ## 本地 Docker 测试
 
