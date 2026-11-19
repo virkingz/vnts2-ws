@@ -1,0 +1,92 @@
+# ===== 节点 A 模板（跨设备互联）=====
+#
+# 放在【第一台机器】上运行。另一台机器请用 node-b/ 下的模板。
+#
+# 两个模板结构完全相同，唯一差别是 .env 里的 PEER_HOST：
+#   node-a 的 PEER_HOST 填 node-b 的地址
+#   node-b 的 PEER_HOST 填 node-a 的地址
+# 互相填对方的地址，不要填自己，否则会形成互联环路。
+#
+# 准备（本机）：
+#   cp .env.example .env
+#   # 编辑 .env，至少填 PEER_HOST 与 SERVER_TOKEN
+#   docker compose up -d
+#
+# 本机需暴露两类端口：
+#   8787  —— 客户端 WSS 接入
+#   18786 —— 节点间互联（明文 HTTP，见文件末尾安全提示）
+
+services:
+  vnts2:
+    image: ghcr.io/virkingz/vnts2-ws:latest
+    container_name: vnts2-a
+    restart: unless-stopped
+    environment:
+      # 本地 Docker 模式：容器内 Worker 监听 8786(HTTP)，8787 暴露 WSS
+      LOCAL_PROTOCOL: http-wss-proxy
+      INTERNAL_PORT: "8786"
+      PUBLIC_PORT: "8787"
+
+      # ===== 网络编号白名单 =====
+      # 只有此处列出的编号允许客户端注册；留空表示允许任意编号。
+      # 两端节点的 NETWORKS 建议保持一致，否则某网络可能只存在于一端。
+      NETWORKS: "${NETWORKS:-office,lab}"
+
+      # ===== 互联 =====
+      # 两端必须填入【完全相同】的非空令牌，否则互联鉴权失败。
+      SERVER_TOKEN: "${SERVER_TOKEN:?请在 .env 中设置 SERVER_TOKEN，两个节点必须一致}"
+      # 对端地址（必填）：node-a 填 node-b 的地址，格式 http://<对端IP或域名>:<对端互联端口>
+      PEER_SERVERS: "${PEER_HOST:?请在 .env 中设置 PEER_HOST 为对端地址}"
+
+      # ===== 可选 =====
+      LEASE_DURATION: "${LEASE_DURATION:-86400}"
+      MAINTENANCE_INTERVAL: "${MAINTENANCE_INTERVAL:-15}"
+      DISABLE_RELAY: "${DISABLE_RELAY:-0}"
+      LOG_LEVEL: "${LOG_LEVEL:-off}"
+      LOG_PASSWORD: "${LOG_PASSWORD:-}"
+      TEST_PASSWORD: "${TEST_PASSWORD:-}"
+
+      # DO 状态持久化目录，指向下方挂载的卷
+      PERSIST_TO: /data
+    volumes:
+      # 设备档案 / IP 分配 / 流量统计。容器重建后数据仍在。
+      - vnts2-data:/data
+    ports:
+      # 客户端接入端口
+      - "${WSS_PORT:-8787}:8787"
+      # 互联端口：把容器内 8786 暴露给【对端节点】访问。
+      # 可用 PEER_BIND_IP 限制只监听某个网卡地址，例如仅监听内网网卡。
+      - "${PEER_BIND_IP:-0.0.0.0}:${PEER_PORT:-18786}:8786"
+    healthcheck:
+      # 探测容器内明文 HTTP 端口，只判断可达，配置 TEST_PASSWORD 也不影响
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # wrangler dev 首次启动需编译 Worker，给足冷启动时间
+      start_period: 40s
+
+volumes:
+  vnts2-data:
+
+# ⚠️ 安全提示
+#
+# 互联端口（默认 18786 -> 容器 8786）是【明文 HTTP】，仅靠 SERVER_TOKEN 鉴权。
+# 它一旦对公网开放，任何拿到令牌的人都能接入你的互联网络。请务必：
+#
+#   1. SERVER_TOKEN 用足够长的随机串，例如：
+#        openssl rand -hex 32
+#      切勿使用文档里的示例值。
+#
+#   2. 用防火墙把互联端口限制为【仅对端节点 IP 可访问】，例如（Ubuntu ufw）：
+#        sudo ufw allow from <对端IP> to any port 18786 proto tcp
+#        sudo ufw deny 18786/tcp
+#      或（iptables / 云厂商安全组）做同等限制。
+#
+#   3. 若两台机器在同一内网或 VPN 内，把 PEER_BIND_IP 设为内网网卡地址，
+#      PEER_HOST 用内网地址互连，互联流量就不会经过公网：
+#        PEER_BIND_IP=10.0.0.5
+#        PEER_HOST=http://10.0.0.6:18786
+#
+# 客户端接入端口（8787）本身是 WSS，由客户端与 Cloudflare Worker 之间的
+# 协议保证，无需额外处理。
