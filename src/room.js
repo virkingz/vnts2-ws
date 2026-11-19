@@ -927,10 +927,15 @@ export class Vnts2Room {
         else totalOfflineClients++;
       }
     }
-    // 统计互联服务端上的客户端
+    // 统计互联服务端上的客户端。
+    // 必须剔除本地已有的设备：同一台设备同时连多个节点时会在各节点
+    // 各注册一次，若直接累加 peerClientCache 长度就会重复计数
+    //（本地 + 远端各算一次）。
     let peerOnlineClients = 0;
-    for (const clients of this.peerClientCache.values()) {
-      peerOnlineClients += clients.length;
+    for (const [code, clients] of this.peerClientCache.entries()) {
+      const net = this.networks.get(code);
+      const devices = net ? net.devices : new Map();
+      peerOnlineClients += countUniqueRemoteClients(devices, clients);
     }
     // 统计互联服务端在线/离线
     let peerOnline = 0;
@@ -1290,6 +1295,29 @@ export function filterRemoteClients(devices, remoteClients, sessionIp) {
     out.push(remote);
   }
   return out;
+}
+
+// 统计远端列表中「本地没有」的在线客户端数量。
+// 与 filterRemoteClients 使用同一套判重规则（deviceId 优先、IP 兜底），
+// 避免 /test 统计与 /room 列表两处口径不一致。
+export function countUniqueRemoteClients(devices, remoteClients) {
+  const seenIds = new Set();
+  const seenIps = new Set();
+  for (const device of devices.values()) {
+    if (!device.ip) continue;
+    if (device.deviceId) seenIds.add(device.deviceId);
+    seenIps.add(device.ip);
+  }
+  let count = 0;
+  for (const remote of remoteClients || []) {
+    if (!remote || !remote.ip) continue;
+    if (remote.deviceId && seenIds.has(remote.deviceId)) continue;
+    if (seenIps.has(remote.ip)) continue;
+    seenIps.add(remote.ip);
+    if (remote.deviceId) seenIds.add(remote.deviceId);
+    if (remote.online !== false) count += 1;
+  }
+  return count;
 }
 
 // 判断对端响应是否为有效的 ClientInfoResponse。
