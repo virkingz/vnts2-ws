@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { collectPeerChains } from "./peer-ca.mjs";
 
 // workerd 默认不信任自签证书。当 PEER_SERVERS 使用 https:// 且对端为自签证书时，
 // 需通过 NODE_EXTRA_CA_CERTS 指向 CA 证书，wrangler 会把它传给 workerd。
@@ -48,6 +49,44 @@ for (const key of configurableVars) {
 if (changed.length) {
   writeFileSync("wrangler.toml", toml);
   console.log(`[vnts2-cf] Docker 启动参数已写入 wrangler.toml：${changed.join(", ")}`);
+}
+
+// 自动信任 https 对端的证书链。
+// 背景：workerd 的 BoringSSL 对某些交叉签名链（典型如 Let's Encrypt
+// YR1 -> ISRG Root YR -> ISRG Root X1）验证会失败，报
+//   "self signed certificate in certificate chain"
+// 而同一张证书用 curl/浏览器访问却正常。属于实现差异，不是证书缺陷。
+// 做法：启动时主动与每个 https 对端握手，取回它实际下发的整条链，
+// 写入临时 PEM 并通过 NODE_EXTRA_CA_CERTS 交给 wrangler/workerd。
+// 用户只需更新镜像即可，无需手工准备或挂载 CA 文件。
+const httpsPeers = String(process.env.PEER_SERVERS || "")
+  .split(",")
+  .map((v) => v.trim().replace(/\/+$/, ""))
+  .filter((v) => /^https:\/\//i.test(v));
+
+if (httpsPeers.length) {
+  console.log(`[vnts2-cf] 检测到 ${httpsPeers.length} 个 https 对端，正在获取其证书链...`);
+  try {
+    const pemList = await collectPeerChains(httpsPeers);
+    if (pemList.length) {
+      const caPath = "/tmp/vnts2-peer-ca.pem";
+      // 若用户手工指定了 CA，则一并保留，避免覆盖其配置。
+      const manual =
+        extraCa && existsSync(extraCa) ? readFileSync(extraCa, "utf-8") : "";
+      writeFileSync(caPath, manual + pemList.join(""), "utf-8");
+      process.env.NODE_EXTRA_CA_CERTS = caPath;
+      console.log(
+        `[vnts2-cf] 已写入对端证书链（${pemList.length} 个证书）到 ${caPath}，` +
+          "并将其设为 NODE_EXTRA_CA_CERTS"
+      );
+    } else {
+      console.log("[vnts2-cf] 未获取到任何对端证书，沿用默认信任库");
+    }
+  } catch (error) {
+    console.error(
+      `[vnts2-cf] 自动获取对端证书链失败：${error.message || String(error)}；沿用默认信任库`
+    );
+  }
 }
 
 if (process.env.LOCAL_PROTOCOL === "http-wss-proxy") {
