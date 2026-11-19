@@ -213,8 +213,18 @@ export class Vnts2Room {
   }
 
   async handleRegister(session, bytes) {
-    const req = parseRequestMessage(bytes);
-    if (!req.reg) throw new Error("首包必须是注册请求");
+    let req;
+    try {
+      req = parseRequestMessage(bytes);
+    } catch (error) {
+      // 打印包前 32 字节，用于判断客户端协议封装是否符合预期：
+      //   0x0a 开头 = 纯 protobuf 注册包（正确格式）
+      //   0x80|type 开头 = 标准 vnts2 数据包（16 字节包头），格式不符
+      const hex = Array.from(bytes.subarray(0, 32), (b) => b.toString(16).padStart(2, "0")).join(" ");
+      this.reportError(`注册包解析失败 会话=${session.id} 长度=${bytes.length} 前32字节=${hex}`, error);
+      throw error;
+    }
+    if (!req.reg) throw new Error("首包必须是注册请求（请确认使用 vnt2/v2 客户端）");
     const reg = req.reg;
     this.validateReg(reg);
     if (!isNetworkAllowed(this.allowedNetworks, reg.networkCode)) {
