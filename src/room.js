@@ -442,8 +442,14 @@ export class Vnts2Room {
       if (!device.ip || device.ip === session.ip) continue;
       if (isAll || device.dataVersion > dataVersion) list.push({ ip: device.ip, online: !!device.online });
     }
-    for (const remote of this.remoteClients(session.networkCode)) {
-      if (remote.ip !== session.ip) list.push({ ip: remote.ip, online: !!remote.online });
+    // 与 clientInfoList 一致的跨节点去重。filterRemoteClients 会先收录
+    // 全部本地设备再逐条判重，因此不受「本轮只推送变更项」的影响。
+    for (const remote of filterRemoteClients(
+      net.devices,
+      this.remoteClients(session.networkCode),
+      session.ip
+    )) {
+      list.push({ ip: remote.ip, online: !!remote.online });
     }
     return { dataVersion: net.dataVersion, list, isAll, time };
   }
@@ -462,6 +468,8 @@ export class Vnts2Room {
       lastConnectedTime: unixSeconds(),
       id: `gateway-${session.networkCode}`
     });
+    // 跨节点去重：同一台设备同时连多个节点时，会在各节点各注册一次，
+    // 互联同步后本地与远端都会有它。此处以本地为准，远端重复项跳过。
     for (const device of net.devices.values()) {
       if (!device.ip || device.ip === session.ip) continue;
       list.push({
@@ -474,8 +482,11 @@ export class Vnts2Room {
         id: device.deviceId
       });
     }
-    for (const remote of this.remoteClients(session.networkCode)) {
-      if (remote.ip === session.ip) continue;
+    for (const remote of filterRemoteClients(
+      net.devices,
+      this.remoteClients(session.networkCode),
+      session.ip
+    )) {
       list.push({
         name: remote.name || "",
         version: remote.version || "",
@@ -744,7 +755,17 @@ export class Vnts2Room {
         networkCode: code,
         clients: Array.from(net.devices.values())
           .filter((d) => d.ip && d.online)
-          .map((d) => ({ ip: d.ip, latencyMs: d.latencyMs || 10 }))
+          .map((d) => ({
+            ip: d.ip,
+            latencyMs: d.latencyMs || 10,
+            // 供对端去重与展示，避免同一设备在多节点各注册一次时显示为多台。
+            deviceId: d.deviceId,
+            name: d.name || "",
+            version: d.version || "",
+            keySign: d.keySign || "",
+            online: !!d.online,
+            lastConnectedTime: d.lastConnectedTime || 0
+          }))
       });
     }
     return { networks };
@@ -1202,6 +1223,30 @@ export function parsePeerServers(raw) {
     peers.push(peer);
   }
   return { peers, errors };
+}
+
+// 从跨节点同步来的客户端列表中，剔除本地已存在的设备。
+// 背景：同一台设备同时连多个节点时，会在每个节点各注册一次；
+// 各节点互联同步后，本地 devices 与 remoteClients 会出现同一设备，
+// 直接拼接就会在客户端设备列表里显示成多台。
+// 规则：本地优先；优先按 deviceId 判重，对端为旧版本（无 deviceId）时退回按虚拟 IP。
+export function filterRemoteClients(devices, remoteClients, sessionIp) {
+  const seenIds = new Set();
+  const seenIps = new Set();
+  for (const device of devices.values()) {
+    if (!device.ip || device.ip === sessionIp) continue;
+    if (device.deviceId) seenIds.add(device.deviceId);
+    seenIps.add(device.ip);
+  }
+  const out = [];
+  for (const remote of remoteClients || []) {
+    if (!remote || remote.ip === sessionIp) continue;
+    if (remote.deviceId && seenIds.has(remote.deviceId)) continue;
+    if (seenIps.has(remote.ip)) continue;
+    seenIps.add(remote.ip);
+    out.push(remote);
+  }
+  return out;
 }
 
 // 判断对端响应是否为有效的 ClientInfoResponse。

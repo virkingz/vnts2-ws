@@ -208,7 +208,17 @@ function encodeServerNetworkInfo(network) {
   for (const client of network.clients || []) {
     const c = new ProtoWriter();
     c.fixed32(1, client.ip);
-    c.uint(2, client.latencyMs || client.latency_ms || 0);
+    c.uint(2, client.latencyMs ?? client.latency_ms ?? 0);
+    // 扩展字段（3~8）：用于跨节点去重与客户端列表展示。
+    // 这是服务端之间的私有协议，客户端不解析；旧版本节点会 skip 未知字段。
+    if (client.deviceId) c.string(3, client.deviceId);
+    if (client.name) c.string(4, client.name);
+    if (client.version) c.string(5, client.version);
+    if (client.keySign) c.string(6, client.keySign);
+    // online 用 1/2 表示而非 bool：ProtoWriter.bool() 在值为 false 时按
+    // proto3 默认值省略不写，会导致 false 丢失。旧节点发 bool(1) 也能被兼容解析。
+    c.uint(7, client.online === false ? 2 : 1);
+    if (client.lastConnectedTime) c.uint(8, client.lastConnectedTime);
     w.message(2, c.finish());
   }
   return w.finish();
@@ -329,11 +339,28 @@ function parseServerNetworkInfo(bytes) {
 
 function parseClientLatencyInfo(bytes) {
   const r = new ProtoReader(bytes);
-  const out = { ip: 0, latencyMs: 10 };
+  // deviceId/name 等为扩展字段：旧版本节点不会返回，此时保持空值，
+  // 调用方需退回按 IP 去重。
+  const out = {
+    ip: 0,
+    latencyMs: 10,
+    deviceId: "",
+    name: "",
+    version: "",
+    keySign: "",
+    online: true,
+    lastConnectedTime: 0
+  };
   while (!r.eof()) {
     const { field, wire } = r.readTag();
     if (field === 1 && wire === 5) out.ip = r.readFixed32();
     else if (field === 2 && wire === 0) out.latencyMs = r.readU32();
+    else if (field === 3 && wire === 2) out.deviceId = r.readString();
+    else if (field === 4 && wire === 2) out.name = r.readString();
+    else if (field === 5 && wire === 2) out.version = r.readString();
+    else if (field === 6 && wire === 2) out.keySign = r.readString();
+    else if (field === 7 && wire === 0) out.online = r.readU32() !== 2;
+    else if (field === 8 && wire === 0) out.lastConnectedTime = Number(r.readVarint());
     else r.skip(wire);
   }
   return out;
