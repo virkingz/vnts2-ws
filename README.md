@@ -422,18 +422,40 @@ PEER_SERVERS: "http://203.0.113.20:18786,http://203.0.113.30:18786,http://node-c
 - 所有互联节点的 `SERVER_TOKEN` 必须**完全相同**
 
 #### 互联走 https:// 的场景
-
-若用反向代理或隧道把 `https://peer.example.com` 映射到对端的 `http://<IP>:18786`，
-`PEER_SERVERS` 就可以填 `https://peer.example.com`（协议层完全支持）。
-
-但 **workerd 默认不信任自签证书**，对端证书若是自签的会报：
+但 **workerd 默认不信任证书链根为自签的证书**，会报：
 
 ```
 failed: TLS peer's certificate is not trusted,
 reason = self signed certificate in certificate chain
 ```
 
-解决办法（Cloudflare 官方做法）——把签发该证书的 CA 交给 workerd：
+#### 先判断：你的证书是"公共 CA"还是"Cloudflare Origin CA"
+
+```bash
+openssl s_client -connect <对方域名>:443 -servername <对方域名> </dev/null 2>/dev/null \
+  | openssl x509 -noout -issuer -subject
+```
+
+| 签发者（issuer） | 类型 | 处理 |
+|---|---|---|
+| `CloudFlare Origin SSL (ECC) Certificate Authority` | **Origin Certificate**（自签根，只有 CF 自己信） | 需按下面配置 CA |
+| `Google Trust Services` / `Let's Encrypt` / `DigiCert` 等 | 公共 CA（Edge / Universal SSL） | **无需配置**，直接可用 |
+
+> 关键区分：Cloudflare 的 **Edge 证书**由公共 CA 签发，workerd 直接信任；
+> 而 **Origin Certificate** 的根是 `Cloudflare Origin SSL Certificate Authority`，
+> 属于自签根，只对 Cloudflare 边缘有效。绕过 CF 边缘直连源站时必然报"自签"错误。
+
+#### 证书根是自签时的处理（Cloudflare 官方做法）
+
+把签发该证书的 CA 交给 workerd。仓库提供了脚本，会在 `certs/ca.crt` 生成
+同时包含 RSA 与 ECC 两个根证书的合并文件：
+
+```bash
+cd examples/two-nodes-cross-host/node-a   # 或 node-b
+bash ../fetch-cf-origin-ca.sh
+```
+
+然后：
 
 ```yaml
 services:
@@ -444,7 +466,16 @@ services:
       - ./certs/ca.crt:/certs/ca.crt:ro    # 把 CA 挂进容器
 ```
 
-- 对端用**公共 CA** 证书（Let's Encrypt、Cloudflare 等）时，**无需任何配置**，直接可用
+启动日志出现 `已加载额外 CA 证书：/certs/ca.crt` 即生效。
+
+其他可选方案：
+
+- 让流量真正经过 Cloudflare 边缘（橙色云代理 / Cloudflare Tunnel），workerd 会看到公共证书
+- 源站改用 Let's Encrypt 等公共 CA 证书
+- 互联改走 `http://<对端IP>:18786`，完全绕开 TLS
+
+注意：
+- 对端用**公共 CA** 证书时**无需任何配置**
 - 互联走 `http://` 时也不要设置此项
 - 该变量为空或指向不存在的文件时，启动脚本会打印明确提示
 
