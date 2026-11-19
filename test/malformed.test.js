@@ -55,3 +55,41 @@ test("traceRequestMessage 对畸形输入不抛错，且能指出中断位置", 
   assert.ok(Array.isArray(lines) && lines.length > 0);
   assert.ok(lines.some((l) => l.includes("中断")), "应包含中断说明");
 });
+
+// 尾部字段不兼容时的容错：只要必要条件（network_code + device_id）齐全就放行。
+// 背景：vnt2 v2.0.12 客户端注册包尾部含服务端未定义字段，
+// 解析到该处会错位并报「不支持的 protobuf wire type：6」，导致整包被丢弃。
+test("尾部字段畸形但必需字段齐全时应容错放行", async () => {
+  const { ProtoWriter } = await import("../src/protobuf.js");
+  const reg = new ProtoWriter();
+  reg.string(1, "wangzhang");
+  reg.string(2, "79f1e67-c3ac-4c42-ad5c-b87abab96258");
+  reg.string(4, "sugon2");
+  reg.string(5, "2.0.12");
+  const body = reg.finish();
+  const bad = new Uint8Array(body.length + 1);
+  bad.set(body);
+  bad[body.length] = 0x0e; // field1 / wire6 -> 非法 wire
+  const req = new ProtoWriter();
+  req.message(1, bad);
+
+  const parsed = parseRequestMessage(req.finish());
+  assert.equal(parsed.reg.networkCode, "wangzhang");
+  assert.equal(parsed.reg.deviceId, "79f1e67-c3ac-4c42-ad5c-b87abab96258");
+  assert.equal(parsed.reg.name, "sugon2");
+  assert.ok(parsed.reg.parseWarning, "应记录 parseWarning");
+});
+
+test("尾部畸形且缺少 device_id 时仍应抛错", async () => {
+  const { ProtoWriter } = await import("../src/protobuf.js");
+  const reg = new ProtoWriter();
+  reg.string(1, "wangzhang"); // 只有网络编号，无 device_id
+  const body = reg.finish();
+  const bad = new Uint8Array(body.length + 1);
+  bad.set(body);
+  bad[body.length] = 0x0e;
+  const req = new ProtoWriter();
+  req.message(1, bad);
+
+  assert.throws(() => parseRequestMessage(req.finish()), /wire type/);
+});

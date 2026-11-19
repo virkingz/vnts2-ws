@@ -48,18 +48,29 @@ export function parseRequestMessage(bytes) {
 function parseRegRequest(bytes) {
   const r = new ProtoReader(bytes);
   const reg = { ip: undefined, keySign: undefined, ipVariable: false, serverId: 0, registrationMode: 0 };
+  // 容错：部分客户端（如 vnt2 v2.0.12）会在注册包尾部追加服务端未定义的字段，
+  // 或字段编码与旧版略有差异，导致解析到尾部时错位并抛错。
+  // 此时若已取得 network_code + device_id（注册的两个必要信息），
+  // 则保留已解析内容继续完成注册，并记录 parseWarning 供日志排查。
   while (!r.eof()) {
-    const { field, wire } = r.readTag();
-    if (field === 1 && wire === 2) reg.networkCode = r.readString();
-    else if (field === 2 && wire === 2) reg.deviceId = r.readString();
-    else if (field === 3 && wire === 5) reg.ip = r.readFixed32();
-    else if (field === 4 && wire === 2) reg.name = r.readString();
-    else if (field === 5 && wire === 2) reg.version = r.readString();
-    else if (field === 6 && wire === 2) reg.keySign = r.readString();
-    else if (field === 7 && wire === 0) reg.ipVariable = r.readBool();
-    else if (field === 8 && wire === 5) reg.serverId = r.readFixed32();
-    else if (field === 9 && wire === 0) reg.registrationMode = Number(r.readVarint());
-    else r.skip(wire);
+    try {
+      const { field, wire } = r.readTag();
+      if (field === 1 && wire === 2) reg.networkCode = r.readString();
+      else if (field === 2 && wire === 2) reg.deviceId = r.readString();
+      else if (field === 3 && wire === 5) reg.ip = r.readFixed32();
+      else if (field === 4 && wire === 2) reg.name = r.readString();
+      else if (field === 5 && wire === 2) reg.version = r.readString();
+      else if (field === 6 && wire === 2) reg.keySign = r.readString();
+      else if (field === 7 && wire === 0) reg.ipVariable = r.readBool();
+      else if (field === 8 && wire === 5) reg.serverId = r.readFixed32();
+      else if (field === 9 && wire === 0) reg.registrationMode = Number(r.readVarint());
+      else r.skip(wire);
+    } catch (error) {
+      // 必需字段齐全才算「可容忍的尾部错误」；否则按原样抛出，避免放过真正畸形的包。
+      if (!reg.networkCode || !reg.deviceId) throw error;
+      reg.parseWarning = `offset=${r.pos}/${r.bytes.length} ${error.message}`;
+      break;
+    }
   }
   return reg;
 }

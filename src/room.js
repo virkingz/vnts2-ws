@@ -264,6 +264,10 @@ export class Vnts2Room {
 
     this.send(session, encodeRegResponse({ ip, prefixLen: cfg.prefix, gateway: cfg.gateway, serverVersion: this.serverVersion }));
     this.logInfo(`注册成功 网络编号=${reg.networkCode} 设备ID=${reg.deviceId} 虚拟IP=${intToIp(ip)} 注册模式=${session.pendingConfirmation ? "预注册" : "普通"} 客户端版本=${reg.version || "未知"}${reg.name ? ` 设备名称=${reg.name}` : ""}`);
+    if (reg.parseWarning) {
+      // 尾部字段不兼容但必需字段齐全，注册已放行；记录以便排查客户端版本差异。
+      this.logInfo(`注册包尾部存在不兼容字段，已忽略 设备ID=${reg.deviceId} 详情=${reg.parseWarning}`);
+    }
     if (!session.pendingConfirmation) {
       await this.persistSoon();
       this.logDebug(`注册后持久化完成 网络编号=${reg.networkCode} 设备ID=${reg.deviceId} 虚拟IP=${intToIp(ip)}`);
