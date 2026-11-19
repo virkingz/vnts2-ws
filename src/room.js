@@ -46,10 +46,9 @@ export class Vnts2Room {
     this.serverVersion = env.SERVER_VERSION || GEN_VERSION;
     this.defaultGatewayIp = env.GATEWAY || "10.46.0.1";
     this.leaseDurationMs = positiveSeconds(env.LEASE_DURATION, 86400, 10) * 1000;
-    this.peerServers = String(env.PEER_SERVERS || "")
-      .split(",")
-      .map((v) => v.trim().replace(/\/+$/, ""))
-      .filter(Boolean);
+    const parsedPeers = parsePeerServers(env.PEER_SERVERS);
+    this.peerServers = parsedPeers.peers;
+    for (const message of parsedPeers.errors) this.configErrors.push(message);
     this.peerToken = env.SERVER_TOKEN || "";
     this.peerTokenHash = "";
     this.peerClientCache = new Map();
@@ -1168,6 +1167,39 @@ export class Vnts2Room {
     if (typeof this.state.waitUntil === "function") this.state.waitUntil(guarded);
     return guarded;
   }
+}
+
+// 解析 PEER_SERVERS：逗号分隔，自动去除两端空格与末尾斜杠，空项忽略。
+// 互联接口是容器内明文 HTTP（8786），不带 TLS 证书。若误填 https://，
+// workerd 会在 TLS 握手阶段报「TLS peer's certificate is not trusted」，
+// 且以 internal error 形式反复刷日志、无法被普通 catch 完全收敛。
+// 因此这里直接过滤掉非 http:// 的项，并返回明确错误供启动时上报。
+export function parsePeerServers(raw) {
+  const peers = [];
+  const errors = [];
+  for (const peer of String(raw || "")
+    .split(",")
+    .map((v) => v.trim().replace(/\/+$/, ""))
+    .filter(Boolean)) {
+    if (/^https:\/\//i.test(peer)) {
+      errors.push(
+        `PEER_SERVERS 中的 ${peer} 使用了 https://，该项已暂不启用。` +
+          `互联接口是明文 HTTP（容器内 8786），互联端口不带 TLS 证书，` +
+          `https 会因自签证书校验失败而报 "TLS peer's certificate is not trusted"。` +
+          `请改为 http://<对端IP>:<对端互联端口>（默认 18786）。`
+      );
+      continue;
+    }
+    if (!/^http:\/\//i.test(peer)) {
+      errors.push(
+        `PEER_SERVERS 中的 ${peer} 缺少 http:// 前缀，该项已暂不启用。` +
+          `应写成 http://<对端IP>:<对端互联端口>。`
+      );
+      continue;
+    }
+    peers.push(peer);
+  }
+  return { peers, errors };
 }
 
 function tryParseRequest(bytes) {
