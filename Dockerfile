@@ -20,6 +20,12 @@ RUN if [ -f package-lock.json ]; then \
 # 阶段二：运行时镜像。
 FROM node:20-bookworm-slim
 
+# slim 变体不含 openssl，而 scripts/wss-proxy.mjs 在本地测试模式下需要它
+# 生成自签证书（完整版 bookworm 自带，故原先可正常运行）。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # 依赖来自上一阶段，镜像层中不含 npm 缓存与构建期临时文件。

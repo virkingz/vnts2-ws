@@ -74,7 +74,10 @@ jobs:
 
           if [ "$ok" != "1" ]; then
             echo "::error::容器未在超时时间内就绪"
-            docker logs smoke --tail 120 || true
+            echo "----- 容器状态 -----"
+            docker ps -a --filter name=smoke || true
+            echo "----- 容器日志 -----"
+            docker logs smoke 2>&1 || true
             exit 1
           fi
 
