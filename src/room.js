@@ -690,8 +690,18 @@ export class Vnts2Room {
         signal: AbortSignal.timeout(15000)
       });
       if (!res.ok) return { peer, online: false, networks: [] };
-      const body = parseServerMessage(await readResponseBytes(res));
-      return { peer, online: true, networks: body.clientInfoRes?.networks || [] };
+      const bytes = await readResponseBytes(res);
+      // 必须确认对端真的返回了 ClientInfoResponse。
+      // 未部署/未配置的对端经反向代理时，可能返回 200 + 空响应或错误页；
+      // 若只判断 res.ok，会把不可达的节点误报为「在线」。
+      if (!isValidClientInfoResponse(bytes)) {
+        this.logInfo(
+          `互联节点响应无效（空响应或缺少客户端列表），判定为离线 节点=${peer} 响应字节数=${bytes.length}`
+        );
+        return { peer, online: false, networks: [] };
+      }
+      const body = parseServerMessage(bytes);
+      return { peer, online: true, networks: body.clientInfoRes.networks || [] };
     } catch (error) {
       this.logInfo(`互联客户端列表刷新失败 节点=${peer} 原因=${error.message || String(error)}`);
       return { peer, online: false, networks: [] };
@@ -1192,6 +1202,19 @@ export function parsePeerServers(raw) {
     peers.push(peer);
   }
   return { peers, errors };
+}
+
+// 判断对端响应是否为有效的 ClientInfoResponse。
+// 未部署/未配置的对端经反向代理（如 EdgeOne、Cloudflare）时，
+// 可能返回 200 + 空响应或错误页；仅凭 HTTP 状态码会误判为「在线」，
+// 因此必须校验响应内容本身。
+export function isValidClientInfoResponse(bytes) {
+  if (!bytes || bytes.length === 0) return false;
+  try {
+    return Boolean(parseServerMessage(bytes).clientInfoRes);
+  } catch {
+    return false;
+  }
 }
 
 function tryParseRequest(bytes) {
