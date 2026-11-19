@@ -1,0 +1,11 @@
+.git
+.github
+.gitignore
+node_modules
+.wrangler
+src/version.js
+img
+test/vnt2_cli
+test/vnt2_ctrl
+*.md
+*.log
