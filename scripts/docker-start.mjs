@@ -38,8 +38,14 @@ if (changed.length) {
 if (process.env.LOCAL_PROTOCOL === "http-wss-proxy") {
   const internalPort = process.env.INTERNAL_PORT || "8786";
   const publicPort = process.env.PUBLIC_PORT || "8787";
+  const persistTo = process.env.PERSIST_TO || "";
   console.log(`[vnts2-cf] Docker 本地测试模式：Worker HTTP=${internalPort}，WSS 代理=${publicPort}`);
-  const worker = spawn("./node_modules/.bin/wrangler", ["dev", "--ip", "0.0.0.0", "--port", internalPort, "--local-protocol", "http"], {
+  if (persistTo) console.log(`[vnts2-cf] Durable Object 状态目录：${persistTo}`);
+  const workerArgs = ["dev", "--ip", "0.0.0.0", "--port", internalPort, "--local-protocol", "http"];
+  // 指定持久化目录，使其落在挂载卷内，容器重建后仍可读回。
+  // 未设置 PERSIST_TO 时沿用 wrangler 默认的 .wrangler/state（容器内，重建即丢失）。
+  if (persistTo) workerArgs.push("--persist-to", persistTo);
+  const worker = spawn("./node_modules/.bin/wrangler", workerArgs, {
     stdio: "inherit"
   });
   const proxy = spawn("node", ["scripts/wss-proxy.mjs"], {

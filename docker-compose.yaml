@@ -49,6 +49,11 @@ x-common-env: &common-env
   # /test 状态页密码，留空则公开可访问
   TEST_PASSWORD: "${TEST_PASSWORD:-}"
 
+  # ===== Durable Object 状态持久化目录 =====
+  # 指向容器内挂载的卷，使设备档案、IP 分配、流量统计在容器重建后仍可读回。
+  # 不设置时 wrangler 会用容器内的 .wrangler/state，容器一重建数据即丢失。
+  PERSIST_TO: /data
+
 services:
   # ---------- 节点 A ----------
   vnts2-a:
@@ -60,6 +65,10 @@ services:
       # 指向【另一个节点】的互联地址。使用容器名 vnts2-b，Compose 默认网络自带 DNS。
       # 严禁填写本节点自身地址，否则形成互联环路。
       PEER_SERVERS: "http://vnts2-b:8786"
+    volumes:
+      # 命名卷保存 DO 状态。两个节点必须各用各的卷，
+      # 共用同一卷会因 sqlite 文件冲突导致数据损坏。
+      - vnts2-a-data:/data
     ports:
       # 宿主机端口 -> 本节点 WSS 接入端口
       - "${PORT_A:-8787}:8787"
@@ -83,6 +92,9 @@ services:
       <<: *common-env
       # 指向节点 A，与本节点自身地址不同
       PEER_SERVERS: "http://vnts2-a:8786"
+    volumes:
+      # 与节点 A 分开的独立卷
+      - vnts2-b-data:/data
     ports:
       # 换一个宿主机端口，避免与节点 A 冲突
       - "${PORT_B:-8788}:8787"
@@ -97,3 +109,10 @@ services:
 networks:
   vnts2:
     driver: bridge
+
+volumes:
+  # Durable Object 状态卷。只要不显式 docker compose down -v，
+  # 这两个卷就会保留，容器重建后 DO 能读回原有数据。
+  # 备份：docker run --rm -v vnts2-a-data:/d -v "$PWD":/b alpine tar czf /b/vnts2-a-data.tgz -C /d .
+  vnts2-a-data:
+  vnts2-b-data:

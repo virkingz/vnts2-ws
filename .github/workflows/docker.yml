@@ -202,6 +202,78 @@ jobs:
           curl -sk "https://127.0.0.1:8787/test?format=json"
           echo
 
+      - name: 验证 DO 状态目录落在挂载卷内
+        run: |
+          set -euo pipefail
+          echo "----- 容器内 /data 内容 -----"
+          docker compose -f docker-compose.yaml exec -T vnts2-a ls -la /data || true
+          # 确认卷确实被写入（应能看到 sqlite 相关文件）
+          if docker compose -f docker-compose.yaml exec -T vnts2-a sh -c 'ls -A /data | grep -q .'; then
+            echo "持久化目录已写入数据"
+          else
+            echo "::error::/data 为空，DO 状态未落到挂载卷"
+            exit 1
+          fi
+
+      - name: 验证容器重建后 DO 数据仍在
+        run: |
+          set -euo pipefail
+          # 关键：先停掉客户端容器，确保重建后不会有客户端重新注册。
+          # 这样 /room 里出现的设备只可能来自持久化读回的档案，测试才成立。
+          docker rm -f wl-ok wl-ok-b || true
+
+          # 等待服务端把离线状态写盘（离线会触发 persistSoon）
+          sleep 8
+
+          before=$(curl -sk "https://127.0.0.1:8787/room?format=json&network=office&gateway=10.46.0.1")
+          echo "----- 重建前 /room（应显示离线设备）-----"
+          echo "$before" | head -c 600
+          echo
+
+          # 重建前先确认卷内确实有数据，否则后面的验证没有意义
+          if ! docker compose -f docker-compose.yaml exec -T vnts2-a sh -c 'ls -A /data | grep -q .'; then
+            echo "::error::重建前 /data 为空，持久化未生效"
+            exit 1
+          fi
+          echo "重建前 /data 已有数据，开始重建容器"
+
+          # 强制重建容器（模拟"重新部署"），保留命名卷
+          docker compose -f docker-compose.yaml up -d --force-recreate
+
+          echo "等待两个节点重新就绪..."
+          for port in 8787 8788; do
+            ok=0
+            for i in $(seq 1 60); do
+              if curl -sk --max-time 3 "https://127.0.0.1:$port/test?format=json" | grep -q '"WebSocket服务":"正常"'; then
+                ok=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::error::重建后端口 $port 未就绪"
+              docker compose -f docker-compose.yaml logs --no-color || true
+              exit 1
+            fi
+          done
+
+          after=$(curl -sk "https://127.0.0.1:8787/room?format=json&network=office&gateway=10.46.0.1")
+          echo "----- 重建后 /room -----"
+          echo "$after" | head -c 600
+          echo
+
+          # 客户端已停，此时设备若仍在列表中，只能来自持久化档案
+          echo "----- 检查历史设备是否保留 -----"
+          for ip in 10.46.0.2 10.46.0.3; do
+            if echo "$after" | grep -q "$ip"; then
+              echo "保留: $ip"
+            else
+              echo "::error::容器重建后丢失设备 $ip"
+              exit 1
+            fi
+          done
+          echo "持久化验证通过：客户端已停，容器重建后 DO 仍持有原设备档案"
+
       - name: 失败时输出日志
         if: failure()
         run: |
