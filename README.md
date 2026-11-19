@@ -408,8 +408,49 @@ Compose 默认网络自带 DNS，直接用容器名（`vnts2-a` / `vnts2-b`）�
 若跨主机部署，把 `PEER_SERVERS` 改成对端可达的 `http://<主机IP>:<映射端口>`，
 并确保该内部端口**不要**直接暴露到公网（互联接口仅靠 `SERVER_TOKEN` 鉴权）。
 
-CI 中的「Compose 互联与白名单验证」会实际启动双节点，验证三件事：
-未授权编号被拒绝、授权编号可注册、跨节点 ping 连通。
+CI 中的「Compose 互联与白名单验证」会实际启动双节点，验证四件事：
+未授权编号被拒绝、授权编号可注册、跨节点 ping 连通、
+**容器重建后 DO 数据仍在**。
+
+### 数据持久化
+
+Durable Object 的状态（设备档案、IP 分配、流量统计、上线时间）默认写在容器内的
+`/app/.wrangler/state`，容器一旦被重建就会**全部丢失**。compose 已挂载命名卷避免该问题：
+
+| 操作 | 数据 |
+|---|---|
+| `docker compose restart` / `stop` + `start` | 保留 |
+| `docker compose down` 后 `up` | **保留**（卷未删除） |
+| `docker compose up -d --force-recreate` / 换镜像重建 | **保留** |
+| `docker compose down -v`（显式删卷） | 丢失 |
+
+实现方式：容器内 `PERSIST_TO=/data`，两个节点各挂一个独立命名卷
+（`vnts2-a-data` / `vnts2-b-data`），由 `docker-start.mjs` 透传给
+`wrangler dev --persist-to`。
+
+> ⚠️ 两个节点**必须各用各的卷**。共用同一个卷会因 sqlite 文件冲突导致数据损坏。
+
+备份与恢复：
+
+```bash
+# 备份节点 A 的状态卷
+docker run --rm -v vnts2-a-data:/d -v "$PWD":/b alpine \
+  tar czf /b/vnts2-a-data.tgz -C /d .
+
+# 恢复（先停容器）
+docker compose down
+docker run --rm -v vnts2-a-data:/d -v "$PWD":/b alpine \
+  sh -c 'rm -rf /d/* && tar xzf /b/vnts2-a-data.tgz -C /d'
+docker compose up -d
+```
+
+若只想从零开始，`docker compose down -v` 即可清空所有持久化数据。
+
+**注意区分**：持久化的是**设备档案**，不是 WebSocket 连接本身。
+容器重建或 DO 休眠后，所有连接都会断开，需要客户端自行重连
+（`vnt2_cli` 会自动重连并复用同一 `device-id`，因此重连后能拿回原来的虚拟 IP）。
+设备列表里离线设备在 `LEASE_DURATION`（默认 86400 秒）内仍会保留展示，
+超时后由维护任务清理。
 
 ## 本地 Docker 测试
 
