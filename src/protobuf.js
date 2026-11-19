@@ -71,7 +71,13 @@ export class ProtoReader {
     } else if (wire === 1) {
       this.pos += 8;
     } else if (wire === 2) {
-      this.pos += Number(this.readVarint());
+      // 必须先读出长度再前移。
+      // 不能写成 this.pos += Number(this.readVarint())：
+      // += 会先取 this.pos 的旧值，而 readVarint() 内部又推进了 this.pos
+      // （吃掉长度字段本身所占的字节），两者相叠加会少跳 1~2 字节，
+      // 导致后续字段全部错位，最终读到垃圾字节并报「varint EOF」。
+      const len = Number(this.readVarint());
+      this.pos += len;
     } else if (wire === 5) {
       this.pos += 4;
     } else {

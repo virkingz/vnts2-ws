@@ -93,3 +93,43 @@ test("尾部畸形且缺少 device_id 时仍应抛错", async () => {
 
   assert.throws(() => parseRequestMessage(req.finish()), /wire type/);
 });
+
+// 回归测试：ProtoReader.skip(wire=2) 必须跳过「长度字段 + 数据」的完整长度。
+// 历史 bug: this.pos += Number(this.readVarint())
+//   += 先取 pos 旧值，而 readVarint() 又推进了 pos，导致少跳长度字段本身的字节，
+//   v2.0.12 客户端新增的 field 10/14（wire=2）会触发累积错位 -> 读到垃圾 -> varint EOF。
+test("跳过未知的 wire=2 字段后，后续字段仍能正确解析", async () => {
+  const { ProtoWriter } = await import("../src/protobuf.js");
+  const reg = new ProtoWriter();
+  reg.string(1, "wangzhang");
+  reg.string(2, "dev-abc");
+  reg.bytes(14, new Uint8Array(32).fill(0xab)); // 未知字段，模拟 client_instance_id
+  reg.string(4, "sugon2");                       // 位于未知字段之后
+  reg.string(5, "2.0.12");
+  const req = new ProtoWriter();
+  req.message(1, reg.finish());
+
+  const parsed = parseRequestMessage(req.finish());
+  assert.equal(parsed.reg.networkCode, "wangzhang");
+  assert.equal(parsed.reg.deviceId, "dev-abc");
+  // 关键断言：未知字段之后的字段未被错位影响
+  assert.equal(parsed.reg.name, "sugon2");
+  assert.equal(parsed.reg.version, "2.0.12");
+  assert.equal(parsed.reg.parseWarning, undefined, "不应产生容错警告");
+});
+
+test("连续多个未知 wire=2 字段也不会累积错位", async () => {
+  const { ProtoWriter } = await import("../src/protobuf.js");
+  const reg = new ProtoWriter();
+  reg.string(1, "wangzhang");
+  reg.string(2, "dev-abc");
+  for (const len of [1, 2, 7, 32, 100]) {
+    reg.bytes(14, new Uint8Array(len).fill(0xcd));
+  }
+  reg.string(4, "tail-ok");
+  const req = new ProtoWriter();
+  req.message(1, reg.finish());
+
+  const parsed = parseRequestMessage(req.finish());
+  assert.equal(parsed.reg.name, "tail-ok", "多个未知字段之后仍应正确解析");
+});
