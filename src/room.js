@@ -13,7 +13,8 @@ import {
   parseRequestMessage,
   parseRpcRequest,
   parseSelectiveBroadcast,
-  readPacket
+  readPacket,
+  traceRequestMessage
 } from "./protocol.js";
 import { contains, defaultNetworkConfig, intToIp, isNetworkAllowed, networkConfigFromClientIp, parseNetworks } from "./ip.js";
 import { SERVER_VERSION as GEN_VERSION } from "./version.js";
@@ -224,11 +225,10 @@ export class Vnts2Room {
     try {
       req = parseRequestMessage(bytes);
     } catch (error) {
-      // 打印包前 32 字节，用于判断客户端协议封装是否符合预期：
-      //   0x0a 开头 = 纯 protobuf 注册包（正确格式）
-      //   0x80|type 开头 = 标准 vnts2 数据包（16 字节包头），格式不符
-      const hex = Array.from(bytes.subarray(0, 32), (b) => b.toString(16).padStart(2, "0")).join(" ");
-      this.reportError(`注册包解析失败 会话=${session.id} 长度=${bytes.length} 前32字节=${hex}`, error);
+      // 完整 hex + 逐字段追踪，用于定位协议不匹配的确切位置。
+      const fullHex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
+      this.reportError(`注册包解析失败 会话=${session.id} 长度=${bytes.length} hex=${fullHex}`, error);
+      for (const line of traceRequestMessage(bytes)) this.logDebug(`注册包追踪 ${line}`);
       throw error;
     }
     if (!req.reg) throw new Error("首包必须是注册请求（请确认使用 vnt2/v2 客户端）");

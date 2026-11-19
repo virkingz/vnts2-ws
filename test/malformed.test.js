@@ -45,3 +45,13 @@ test("声明超长 bytes 字段应被拒绝（不越界读取）", () => {
   // tag(field=1, wire=2) = 0x0a，随后声明长度 200 但只给 2 字节
   assert.throws(() => parseRequestMessage(new Uint8Array([0x0a, 0xc8, 0x01, 0x00, 0x00])), /意外 EOF/);
 });
+
+test("traceRequestMessage 对畸形输入不抛错，且能指出中断位置", async () => {
+  const { traceRequestMessage } = await import("../src/protocol.js");
+  // 真实线上包的前 32 字节：外层声明长度 105，但只给到 32 字节 -> 应报告中断
+  const hex = "0a 69 09 77 61 6e 67 7a 68 61 6e 67 12 24 37 39 66 33 66 66 33 66 32 64 63 33 31 63 36 33 64 34 63";
+  const bytes = new Uint8Array(hex.split(" ").map((h) => parseInt(h, 16)));
+  const lines = traceRequestMessage(bytes);
+  assert.ok(Array.isArray(lines) && lines.length > 0);
+  assert.ok(lines.some((l) => l.includes("中断")), "应包含中断说明");
+});

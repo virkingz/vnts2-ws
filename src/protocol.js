@@ -366,3 +366,57 @@ export function makePacket(msgType, payload = new Uint8Array(0), { gateway = fal
   out.set(payload, HEAD_LENGTH);
   return out;
 }
+
+// 诊断用：逐字段走一遍注册包，返回可读的字段走向，永不抛错。
+// 用于定位「解析到某字段时 EOF / wire 非法」这类协议不匹配问题。
+export function traceRequestMessage(bytes) {
+  const lines = [];
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const outer = new ProtoReader(view);
+  let guard = 0;
+  try {
+    while (!outer.eof() && guard++ < 32) {
+      const offset = outer.pos;
+      const { field, wire } = outer.readTag();
+      if (wire === 2) {
+        const inner = outer.readBytes();
+        lines.push(`@${offset} field=${field} wire=2 len=${inner.length}`);
+        if (field === 1) {
+          const r = new ProtoReader(inner);
+          let innerGuard = 0;
+          while (!r.eof() && innerGuard++ < 32) {
+            const off = r.pos;
+            const t = r.readTag();
+            if (t.wire === 2) {
+              const value = r.readBytes();
+              // 字符串可读就显示，否则显示字节数
+              const text = new TextDecoder().decode(value);
+              const printable = /^[\x20-\x7e]*$/.test(text);
+              lines.push(
+                `    内层 @${off} field=${t.field} wire=2 len=${value.length}` +
+                  (printable && value.length <= 48 ? ` "${text}"` : "")
+              );
+            } else if (t.wire === 0) {
+              lines.push(`    内层 @${off} field=${t.field} wire=0 value=${r.readVarint()}`);
+            } else if (t.wire === 5) {
+              lines.push(`    内层 @${off} field=${t.field} wire=5 value=${r.readFixed32()}`);
+            } else {
+              lines.push(`    内层 @${off} field=${t.field} wire=${t.wire}（非预期 wire）`);
+              r.skip(t.wire);
+            }
+          }
+        }
+      } else if (wire === 0) {
+        lines.push(`@${offset} field=${field} wire=0 value=${outer.readVarint()}`);
+      } else if (wire === 5) {
+        lines.push(`@${offset} field=${field} wire=5 value=${outer.readFixed32()}`);
+      } else {
+        lines.push(`@${offset} field=${field} wire=${wire}（非预期 wire）`);
+        outer.skip(wire);
+      }
+    }
+  } catch (error) {
+    lines.push(`!! 中断于 offset=${outer.pos}/${view.length}：${error.message}`);
+  }
+  return lines;
+}
