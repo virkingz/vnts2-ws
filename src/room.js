@@ -194,7 +194,14 @@ export class Vnts2Room {
       //   0x80|type -> 标准 vnts2 数据包（16 字节包头），不应作为注册首包
       // 其余值多为客户端版本或传输封装不匹配。
       const head = bytes.length ? `0x${bytes[0].toString(16).padStart(2, "0")}` : "无";
+      // 打印前 32 字节 hex，用于判断客户端协议封装：
+      //   0a ..        = 纯 protobuf 注册包（field=1 wire=2），正确格式
+      //   80..-ff..    = 标准 vnts2 数据包（16 字节包头），不应作为注册首包
+      const hex = bytes.length
+        ? Array.from(bytes.subarray(0, 32), (b) => b.toString(16).padStart(2, "0")).join(" ")
+        : "";
       this.logDebug(`收到注册首包 会话=${sessionId} 类型=${typeof raw} 长度=${bytes.length} 首字节=${head}`);
+      if (hex) this.logDebug(`注册首包前32字节 ${hex}`);
       if (bytes.length === 0) throw new Error("注册首包为空，请确认客户端协议版本为 VNT2");
       await this.handleRegister(session, bytes);
       return;
