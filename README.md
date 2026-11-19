@@ -336,6 +336,31 @@ sudo ./vnt2_cli -s wss://127.0.0.1:8787 -n 你的网络编号 --cert-mode skip
 > 镜像内已自动生成 `src/version.js`，版本号格式为 `<日期>_<短提交哈希>`，
 > 可在 `/test` 页面的「服务端版本」中直接核对当前镜像对应的提交。
 
+### 支持的架构
+
+镜像以 manifest list 形式同时发布 **linux/amd64** 与 **linux/arm64**，
+`docker pull` 会按当前运行的平台自动选择，无需手动指定：
+
+```bash
+# 在 ARM64 服务器/NAS（如甲骨文 ARM 实例、群晖）上
+docker pull ghcr.io/virkingz/vnts2-ws:latest      # 自动拉取 arm64
+# 如需确认实际架构
+docker image inspect ghcr.io/virkingz/vnts2-ws:latest --format '{{.Architecture}}'
+```
+
+交叉编译的具体情况：
+
+| 架构 | 构建方式 | 说明 |
+|---|---|---|
+| amd64 | 原生 | GitHub runner 即为 x86_64 |
+| arm64 | QEMU 模拟 | 构建耗时明显更长，但产物为原生 arm64 二进制 |
+
+底层依赖 `workerd`（`wrangler` 的 Worker 运行时）本身提供
+`@cloudflare/workerd-linux-arm64`，因此 arm64 下也是原生执行，**不是**模拟运行。
+
+CI 的冒烟测试会对**两个架构分别**构建镜像、真实拉起容器并轮询 `/test`，
+任一架构起不来都会阻止发布。
+
 ### 镜像体积
 
 镜像采用多阶段构建 + `node:20-bookworm-slim` 基础镜像，体积约 **480MB**

@@ -31,6 +31,21 @@ WORKDIR /app
 # 依赖来自上一阶段，镜像层中不含 npm 缓存与构建期临时文件。
 COPY --from=deps /app/node_modules ./node_modules
 
+# 校验 workerd 原生二进制与当前构建架构匹配。
+# workerd 的平台二进制（@cloudflare/workerd-linux-64 / -linux-arm64）在
+# lockfile 中标记为 optional，靠 os/cpu 字段按平台筛选安装；
+# 若因锁文件或 npm 行为变化导致未装上，运行时才会以「服务起不来」的形式暴露，
+# 排查成本高。这里在构建期直接断言，多架构构建时能立刻失败。
+RUN node -e "\
+const os=require('os'),fs=require('fs'),path=require('path');\
+const arch=os.arch();\
+const pkg='@cloudflare/workerd-linux-'+(arch==='arm64'?'arm64':'64');\
+const bin=path.join('node_modules',pkg,'bin','workerd');\
+if(!fs.existsSync(bin)){console.error('[build] 缺少 '+pkg+' 二进制（架构 '+arch+'），workerd 将无法运行');process.exit(1);}\
+fs.accessSync(bin,fs.constants.X_OK);\
+console.log('[build] workerd 二进制校验通过：'+pkg+'（架构 '+arch+'）');\
+"
+
 COPY package.json ./
 COPY src ./src
 COPY scripts ./scripts

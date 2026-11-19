@@ -49,12 +49,21 @@ jobs:
         run: npm test
 
   smoke:
-    name: 容器启动冒烟测试
+    name: 容器启动冒烟测试 (${{ matrix.platform }})
     runs-on: ubuntu-latest
     needs: test
+    strategy:
+      # 两个架构都验证；任一失败不影响另一个，便于定位问题架构。
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
+
+      # arm64 在 amd64 runner 上需 QEMU 模拟。
+      - name: 设置 QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: 设置 Buildx
         uses: docker/setup-buildx-action@v3
@@ -64,24 +73,28 @@ jobs:
         with:
           context: .
           push: false
+          # load 只支持单平台，因此按矩阵逐个平台构建。
           load: true
+          platforms: ${{ matrix.platform }}
           tags: vnts2-ws:smoke
           build-args: |
             SERVER_COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
 
       - name: 启动容器并验证 /test 可用
         run: |
           set -euo pipefail
-          docker run -d --name smoke -p 8787:8787 \
+          docker run -d --name smoke --platform ${{ matrix.platform }} -p 8787:8787 \
             -e LOCAL_PROTOCOL=http-wss-proxy \
             -e NETWORKS=default \
             vnts2-ws:smoke
 
-          echo "等待服务就绪..."
+          echo "等待服务就绪（${{ matrix.platform }}）..."
+          # arm64 走 QEMU 模拟，workerd 与 esbuild 均为原生二进制，
+          # 启动明显慢于 amd64，因此超时给到 180s。
           ok=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 180); do
             if curl -sk --max-time 3 "https://127.0.0.1:8787/test?format=json" | grep -q '"WebSocket服务":"正常"'; then
               ok=1
               break
@@ -90,7 +103,7 @@ jobs:
           done
 
           if [ "$ok" != "1" ]; then
-            echo "::error::容器未在超时时间内就绪"
+            echo "::error::容器未在超时时间内就绪（${{ matrix.platform }}）"
             echo "----- 容器状态 -----"
             docker ps -a --filter name=smoke || true
             echo "----- 容器日志 -----"
@@ -102,7 +115,11 @@ jobs:
           curl -sk "https://127.0.0.1:8787/test?format=json"
           echo
 
+          echo "----- 校验实际运行架构 -----"
+          docker exec smoke node -e "console.log('node arch =', process.arch)"
+
       - name: 诊断镜像体积构成
+        if: matrix.platform == 'linux/amd64'
         run: |
           echo "===== 最终镜像体积 ====="
           docker images vnts2-ws:smoke --format '{{.Size}}'
@@ -329,6 +346,9 @@ jobs:
       - name: 拉取代码
         uses: actions/checkout@v4
 
+      - name: 设置 QEMU（构建多架构镜像用）
+        uses: docker/setup-qemu-action@v3
+
       - name: 设置 Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -355,6 +375,10 @@ jobs:
         with:
           context: .
           push: true
+          # 同时构建 amd64 与 arm64，合并为一个 manifest list，
+          # docker pull 时按运行平台自动选择。
+          # arm64 走 QEMU 模拟，构建耗时明显长于 amd64。
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
