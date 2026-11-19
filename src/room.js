@@ -667,7 +667,21 @@ export class Vnts2Room {
         if (!isNetworkAllowed(this.allowedNetworks, network.networkCode)) continue;
         const list = next.get(network.networkCode) || [];
         for (const client of network.clients || []) {
-          list.push({ ip: client.ip >>> 0, latencyMs: client.latencyMs || 10, online: true, remotePeer: result.peer });
+          // 必须完整保留 deviceId/name/version：deviceId 用于跨节点去重，
+          // name/version 用于在客户端设备列表中正常展示。
+          // 早期实现只取 ip/latencyMs/online，导致远端设备名称为空、
+          // 且去重只能退回按 IP 判断。
+          list.push({
+            ip: client.ip >>> 0,
+            latencyMs: client.latencyMs || 10,
+            online: client.online !== false,
+            deviceId: client.deviceId || "",
+            name: client.name || "",
+            version: client.version || "",
+            keySign: client.keySign || "",
+            lastConnectedTime: client.lastConnectedTime || 0,
+            remotePeer: result.peer
+          });
         }
         next.set(network.networkCode, list);
       }
@@ -1015,11 +1029,17 @@ export class Vnts2Room {
     const auth = await this.authorizeStatusRequest(request, url);
     if (!auth.ok) return htmlResponse(renderLoginHtml(auth.message || "请输入正确的网络编号和网关"));
     const info = this.roomInfo();
-    // 互联服务端上客户端
+    // 互联服务端上客户端。
+    // 这里必须完整透传 deviceId/name/version：上游 peerClientCache 已带这些字段，
+    // 若在此处只映射 ip/peer，下方渲染就拿不到名称，只能显示为空，去重也会失效。
     info.peerClients = Array.from(this.peerClientCache.entries()).map(([networkCode, clients]) => ({
       networkCode,
       clients: clients.map((client) => ({
         ip: intToIp(client.ip),
+        deviceId: client.deviceId || "",
+        name: client.name || "",
+        version: client.version || "",
+        online: client.online !== false,
         peer: client.remotePeer
       }))
     }));
@@ -1042,11 +1062,34 @@ export class Vnts2Room {
         });
       }
     }
-    // 互联服务端上客户端
+    // 互联服务端上客户端。
+    // 需剔除本地已存在的设备：同一台设备同时连多个节点时，会在各节点
+    // 各注册一次，不去重就会在列表里显示成多台同 IP 的客户端。
+    // 同时补上名称/版本等字段（早期只填了 IP 与服务端，故显示为空和 "-"）。
+    const localIds = new Set();
+    const localIps = new Set();
+    for (const net of info.networks || []) {
+      for (const d of net.devices) {
+        if (d.deviceId) localIds.add(d.deviceId);
+        if (d.ip) localIps.add(d.ip);
+      }
+    }
     for (const pc of info.peerClients || []) {
       for (const c of pc.clients || []) {
+        const cid = c.deviceId || "";
+        const cip = c.ip;
+        if (cid && localIds.has(cid)) continue;
+        if (cip && localIps.has(cip)) continue;
+        if (cip) localIps.add(cip);
+        if (cid) localIds.add(cid);
         devices.push({
-          类型: "互联", 虚拟IP: c.ip, 状态: "在线", 服务端: c.peer
+          类型: "互联",
+          虚拟IP: cip,
+          名称: c.name || "",
+          版本: c.version || "",
+          设备ID: cid,
+          状态: c.online === false ? "离线" : "在线",
+          服务端: c.peer
         });
       }
     }
