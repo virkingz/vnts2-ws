@@ -1,1 +1,4 @@
 src/version.js
+.env
+.wrangler
+node_modules

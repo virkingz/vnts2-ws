@@ -24,6 +24,9 @@
 
 **新增配置**
 - `TEST_PASSWORD`：可选地为 `/test` 状态页加访问密码；**留空时行为与原来完全一致（公开）**。
+- 提供 `docker-compose.yaml` 示例：双节点互联 + `NETWORKS` 网络白名单。
+- 修复 `docker-start.mjs` 环境变量透传白名单缺失 `TEST_PASSWORD` / `GATEWAY` / `GATEWAY_NAME`
+  （原先从 Docker 传入这些配置会静默失效）。
 
 **安全加固**
 - 认证 Cookie（`log_auth`、`peer_auth`）改为 `HttpOnly` + `Secure`，前端不再能通过脚本读取口令。
@@ -54,6 +57,7 @@
 - [与 Rust vnts2 的差异](#与-rust-vnts2-的差异)
 - [Cloudflare 部署](#cloudflare-部署)
 - [vnt2 客户端示例](#vnt2-客户端示例)
+- [Docker Compose 部署（双节点互联 + 网络白名单）](#docker-compose-部署双节点互联--网络白名单)
 - [本地 Docker 测试](#本地-docker-测试)
 - [基础配置](#基础配置)
   - [配置对照](#配置对照)
@@ -342,6 +346,70 @@ sudo ./vnt2_cli -s wss://127.0.0.1:8787 -n 你的网络编号 --cert-mode skip
 
 CI 中的「容器启动冒烟测试」会真实拉起容器并轮询 `/test`，
 验证通过后才允许推送镜像，避免发布起不来的镜像。
+
+## Docker Compose 部署（双节点互联 + 网络白名单）
+
+仓库根目录提供 `docker-compose.yaml`，示例启动**两个互联的服务端节点**，
+并用 `NETWORKS` 白名单限制客户端可使用的网络编号。
+
+### 启动
+
+```bash
+# 强烈建议设置自己的互联令牌（两个节点务必一致）
+export SERVER_TOKEN='你的-长-随机-令牌'
+
+docker compose -f docker-compose.yaml up -d
+```
+
+如需固定配置，可在同目录建 `.env`：
+
+```dotenv
+SERVER_TOKEN=你的-长-随机-令牌
+NETWORKS=office,lab
+PORT_A=8787
+PORT_B=8788
+LOG_LEVEL=off
+```
+
+### 客户端连接
+
+网络编号**必须在白名单内**，否则服务端会拒绝注册并报
+`network_code 'xxx' is not allowed by server configuration or database`：
+
+```bash
+# 接入节点 A
+sudo ./vnt2_cli -s wss://<主机IP>:8787 -n office --cert-mode skip
+
+# 接入节点 B
+sudo ./vnt2_cli -s wss://<主机IP>:8788 -n lab --cert-mode skip
+
+# 不在白名单内 -> 注册被拒
+sudo ./vnt2_cli -s wss://<主机IP>:8787 -n notallowed --cert-mode skip
+```
+
+两个节点上的同网络客户端会互相可见，跨节点流量由服务端互联转发。
+
+### 关键配置说明
+
+| 项 | 说明 |
+|---|---|
+| `NETWORKS` | **网络编号白名单**，逗号分隔；留空表示允许任意编号。只限制客户端 `-n`，不影响服务端互联 |
+| `SERVER_TOKEN` | 互联共享令牌，**所有互联节点必须配置相同的非空值**；留空会禁用 `/peer` 互联接口 |
+| `PEER_SERVERS` | 互联对端地址。用容器名指向对方**内部 8786 端口**，严禁填写本节点自身地址 |
+| `PORT_A` / `PORT_B` | 两个节点映射到宿主机的 WSS 端口，默认 8787 / 8788 |
+
+### 互联实现要点
+
+Worker 由 `wrangler dev` 以**纯 HTTP** 监听容器内 `8786` 端口，节点之间通过
+`PEER_SERVERS` 访问对方的 `8786` 完成 `ClientInfo` / `ForwardData` 同步。
+因此互联走的是容器网络内的明文 HTTP，**不经过 8787 的 WSS 端口，也不需要 TLS 证书**。
+
+Compose 默认网络自带 DNS，直接用容器名（`vnts2-a` / `vnts2-b`）即可互相解析。
+若跨主机部署，把 `PEER_SERVERS` 改成对端可达的 `http://<主机IP>:<映射端口>`，
+并确保该内部端口**不要**直接暴露到公网（互联接口仅靠 `SERVER_TOKEN` 鉴权）。
+
+CI 中的「Compose 互联与白名单验证」会实际启动双节点，验证三件事：
+未授权编号被拒绝、授权编号可注册、跨节点 ping 连通。
 
 ## 本地 Docker 测试
 
