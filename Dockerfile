@@ -5,16 +5,43 @@ FROM node:20-bookworm-slim AS deps
 WORKDIR /app
 
 # 只拷贝依赖清单，最大化利用 Docker 层缓存。
-# 注意：wrangler 虽声明在 devDependencies，但运行时靠它模拟 Worker/Durable Object，
-# 因此必须完整安装，不能使用 --omit=dev。
-# sharp 是 wrangler 的可选依赖（仅用于图片处理），本服务用不到，用 --omit=optional 省去。
+#
+# 关于 optionalDependencies 的取舍（重要）：
+# workerd 与 esbuild 的**平台原生二进制**都以 optionalDependencies 形式分发：
+#   @cloudflare/workerd-linux-64 / -linux-arm64
+#   @esbuild/linux-x64 / -linux-arm64
+# 若用 --omit=optional 全局排除，这些二进制根本不会装上；workerd 的
+# postinstall（install.js）只能联网补装作为兜底，官方明确提示：
+#   "This can happen if you use the --no-optional flag. ...
+#    If that fails, you need to remove the --no-optional flag to use workerd."
+# 交叉构建 arm64 时该兜底不可靠，因此这里**不加** --omit=optional，
+# 让 npm 按 os/cpu 自动装上当前平台的二进制；随后再删掉本服务用不到的
+# sharp（wrangler 的可选依赖，仅用于图片处理及配套 libvips），
+# 既保证原生二进制完整，又保住了体积收益。
 COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then \
-      npm ci --omit=optional --no-audit --no-fund; \
+      npm ci --no-audit --no-fund; \
     else \
-      npm install --omit=optional --no-audit --no-fund; \
+      npm install --no-audit --no-fund; \
     fi \
+    && rm -rf node_modules/sharp node_modules/@img \
     && npm cache clean --force
+
+# 构建期断言：确认 workerd 原生二进制已就位且可执行。
+# 说明：workerd 的 postinstall 会调用 maybeOptimizePackage()，把平台包内的
+# 二进制硬链接到 node_modules/workerd/bin/workerd，运行时使用的正是该路径
+# （而非 @cloudflare/workerd-linux-* 包内的原始位置）。
+# 若此处缺失，说明平台二进制未装上，容器启动必然失败；
+# 在构建期断言可让多架构构建立刻暴露问题，而不是拖到运行时。
+RUN node -e "\
+const fs=require('fs'),path=require('path');\
+const p=path.join('node_modules','workerd','bin','workerd');\
+if(!fs.existsSync(p)){console.error('[build] 缺少 workerd 可执行文件：'+p);process.exit(1);}\
+fs.accessSync(p,fs.constants.X_OK);\
+const st=fs.statSync(p);\
+if(st.size<1000000){console.error('[build] workerd 可能是占位脚本而非原生二进制，大小='+st.size);process.exit(1);}\
+console.log('[build] workerd 原生二进制校验通过（'+process.arch+'，'+Math.round(st.size/1048576)+'MB）');\
+"
 
 
 # 阶段二：运行时镜像。
@@ -29,22 +56,8 @@ RUN apt-get update \
 WORKDIR /app
 
 # 依赖来自上一阶段，镜像层中不含 npm 缓存与构建期临时文件。
+# workerd 原生二进制（node_modules/workerd/bin/workerd）已在上一阶段断言过。
 COPY --from=deps /app/node_modules ./node_modules
-
-# 校验 workerd 原生二进制与当前构建架构匹配。
-# workerd 的平台二进制（@cloudflare/workerd-linux-64 / -linux-arm64）在
-# lockfile 中标记为 optional，靠 os/cpu 字段按平台筛选安装；
-# 若因锁文件或 npm 行为变化导致未装上，运行时才会以「服务起不来」的形式暴露，
-# 排查成本高。这里在构建期直接断言，多架构构建时能立刻失败。
-RUN node -e "\
-const os=require('os'),fs=require('fs'),path=require('path');\
-const arch=os.arch();\
-const pkg='@cloudflare/workerd-linux-'+(arch==='arm64'?'arm64':'64');\
-const bin=path.join('node_modules',pkg,'bin','workerd');\
-if(!fs.existsSync(bin)){console.error('[build] 缺少 '+pkg+' 二进制（架构 '+arch+'），workerd 将无法运行');process.exit(1);}\
-fs.accessSync(bin,fs.constants.X_OK);\
-console.log('[build] workerd 二进制校验通过：'+pkg+'（架构 '+arch+'）');\
-"
 
 COPY package.json ./
 COPY src ./src
