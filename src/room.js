@@ -163,16 +163,21 @@ export class Vnts2Room {
     const remote = getClientIp(request);
     this.sessions.set(sessionId, { id: sessionId, socket: server, registered: false, remote });
     this.logInfo(`收到 WebSocket 连接，会话=${sessionId} 来源=${remote || "未知"}`);
-    server.addEventListener("message", (event) => this.handleMessage(sessionId, event.data).catch((error) => this.closeWithError(sessionId, error).catch((closeError) => this.reportError(`关闭异常会话失败 会话=${sessionId}`, closeError))));
-    server.addEventListener("close", (event) => {
-      const promise = this.offline(sessionId);
+    server.addEventListener("message", (event) => {
+      // 整条链路包异常：任何未捕获的 rejection 都会冒泡成
+      // Cloudflare 的 "Uncaught Error: Network connection lost"，
+      // 并可能影响该 Durable Object 上其他会话。
+      const promise = this.handleMessage(sessionId, event.data)
+        .catch((error) => this.closeWithError(sessionId, error))
+        .catch((error) => this.reportError(`处理会话消息失败 会话=${sessionId}`, error));
       if (typeof this.state.waitUntil === "function") this.state.waitUntil(promise);
-      promise.catch((error) => this.reportError(`处理客户端离线失败 会话=${sessionId}`, error));
+    });
+    server.addEventListener("close", (event) => {
+      // socket 已关闭时不能再走 closeWithError（其中会尝试 send），直接走 offline。
+      this.runSafely(this.offline(sessionId), `处理客户端离线失败 会话=${sessionId}`);
     });
     server.addEventListener("error", (event) => {
-      const promise = this.offline(sessionId);
-      if (typeof this.state.waitUntil === "function") this.state.waitUntil(promise);
-      promise.catch((error) => this.reportError(`处理 WebSocket 错误失败 会话=${sessionId}`, error));
+      this.runSafely(this.offline(sessionId), `处理 WebSocket 错误失败 会话=${sessionId}`);
     });
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -183,6 +188,10 @@ export class Vnts2Room {
     const bytes = await toBytes(raw);
     if (bytes.length > MAX_MESSAGE_BYTES) throw new Error(`消息超过大小限制：${bytes.length} > ${MAX_MESSAGE_BYTES}`);
     if (!session.registered) {
+      // 记录入站首包概况，便于排查「读取 varint 时遇到意外 EOF」这类空包/畸形包问题。
+      // 若长度恒为 0，说明对端在 WS 升级后发了空帧，或连接被中途截断。
+      this.logDebug(`收到注册首包 会话=${sessionId} 类型=${typeof raw} 长度=${bytes.length}`);
+      if (bytes.length === 0) throw new Error("注册首包为空，请确认客户端协议版本为 VNT2");
       await this.handleRegister(session, bytes);
       return;
     }
@@ -506,7 +515,13 @@ export class Vnts2Room {
     try {
       session.socket.close(1011, "server error");
     } catch {}
-    await this.offline(sessionId);
+    // socket 已关闭，offline 内部可能因写入存储失败而 reject，
+    // 这里必须兜住，否则会逸出为未捕获错误。
+    try {
+      await this.offline(sessionId);
+    } catch (offlineError) {
+      this.reportError(`异常关闭后清理会话失败 会话=${sessionId}`, offlineError);
+    }
   }
 
   async handlePeerRequest(request, url) {
@@ -1119,6 +1134,14 @@ export class Vnts2Room {
     const text = limitText(`[vnts2-cf] ${context}：${errorMessage(error)}`, 4096);
     this.appendLog("error", text);
     if (this.logPassword) console.error(text, error);
+  }
+
+  // 把后台 Promise 的失败收敛为日志，并交给 waitUntil 持有生命周期，
+  // 避免异常逸出 WebSocket 事件回调后变成未捕获错误。
+  runSafely(promise, context) {
+    const guarded = Promise.resolve(promise).catch((error) => this.reportError(context, error));
+    if (typeof this.state.waitUntil === "function") this.state.waitUntil(guarded);
+    return guarded;
   }
 }
 
