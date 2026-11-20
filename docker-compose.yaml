@@ -72,15 +72,9 @@ services:
     ports:
       # 宿主机端口 -> 本节点 WSS 接入端口
       - "${PORT_A:-8787}:8787"
-    healthcheck:
-      # 探测容器内 Worker 的明文 HTTP 端口，验证服务已就绪。
-      # 只判断端口可达（不校验状态码），因此配置了 TEST_PASSWORD 也不影响。
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      # wrangler dev 首次启动需要编译 Worker，给足冷启动时间
-      start_period: 40s
+    # 不配置 healthcheck：没有组件依赖就绪状态
+    # （无 service_healthy 条件，CI 自行轮询 /test）。
+    # 如需健康探测，注意每次探测都会新起一个 node 进程请求 8786。
     networks: [vnts2]
 
   # ---------- 节点 B ----------
@@ -98,12 +92,7 @@ services:
     ports:
       # 换一个宿主机端口，避免与节点 A 冲突
       - "${PORT_B:-8788}:8787"
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
+    # 不配置 healthcheck，理由同节点 A。
     networks: [vnts2]
 
 networks:

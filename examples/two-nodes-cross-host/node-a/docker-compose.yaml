@@ -66,14 +66,9 @@ services:
       # 互联端口：把容器内 8786 暴露给【对端节点】访问。
       # 可用 PEER_BIND_IP 限制只监听某个网卡地址，例如仅监听内网网卡。
       - "${PEER_BIND_IP:-0.0.0.0}:${PEER_PORT:-18786}:8786"
-    healthcheck:
-      # 探测容器内明文 HTTP 端口，只判断可达，配置 TEST_PASSWORD 也不影响
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      # wrangler dev 首次启动需编译 Worker，给足冷启动时间
-      start_period: 40s
+    # 不配置 healthcheck：服务没有任何组件依赖就绪状态
+    # （compose 无 service_healthy 条件，CI 自行轮询 /test）。
+    # 若需要，可自行加回，但注意每次探测都会新起一个 node 进程请求 8786。
 
 volumes:
   vnts2-data:
