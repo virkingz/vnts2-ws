@@ -57,7 +57,12 @@ services:
       - "${WSS_PORT:-8787}:8787"
       # 互联端口，供对端节点访问。同理，独立部署时与 node-a 一致为 18786。
       - "${PEER_BIND_IP:-0.0.0.0}:${PEER_PORT:-18786}:8786"
-    # 不配置 healthcheck，理由见 node-a/docker-compose.yaml 的说明。
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8786/test').then(()=>process.exit(0)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 
 volumes:
   vnts2-data:
